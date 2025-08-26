@@ -1,0 +1,9 @@
+numpy 
+scipy 
+scikit-learn 
+torch 
+torchvision 
+mne 
+matplotlib
+torcheeg 
+pyriemann
