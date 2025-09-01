@@ -56,11 +56,11 @@ def get_cv_iterator(groups: np.ndarray, cv_strategy: str) -> Any:
         raise ImportError(
             "scikit-learn is required for cross-validation. Please install scikit-learn."
         )
-    if cv_strategy == 'leave-one-subject-out':
+    if cv_strategy == "leave-one-subject-out":
         return LeaveOneGroupOut()
-    elif cv_strategy.startswith('group-k-fold'):
+    elif cv_strategy.startswith("group-k-fold"):
         # Parse number of splits if provided, e.g. group-k-fold-5
-        parts = cv_strategy.split('-')
+        parts = cv_strategy.split("-")
         n_splits = 5
         if len(parts) == 4:
             try:
@@ -114,7 +114,10 @@ def train_evaluate_linear_model(
     folds = []
 
     # Fallback: if leave-one-subject-out requested but only one group present, use a single fold
-    if training_config.cv_strategy == 'leave-one-subject-out' and len(unique_groups) < 2:
+    if (
+        training_config.cv_strategy == "leave-one-subject-out"
+        and len(unique_groups) < 2
+    ):
         # Single pseudo fold using all data for both train & test (optimistic, but avoids crash on toy data)
         cv_splits = [(np.arange(len(X_valid)), np.arange(len(X_valid)))]
     else:
@@ -131,32 +134,39 @@ def train_evaluate_linear_model(
         # Remove zero counts from zipping by filtering classes
         class_weight = {
             cls: len(y_train) / (len(classes) * count)
-            for cls, count in zip(classes, class_counts) if count > 0
+            for cls, count in zip(classes, class_counts)
+            if count > 0
         }
         # If only one class present (can happen with very small synthetic datasets), skip training
         if len(classes) < 2:
             # Assign neutral metrics (cannot compute ROC AUC with one class)
-            folds.append({
-                'fold': fold_i,
-                'balanced_accuracy': 1.0,
-                'f1_macro': 1.0,
-                'roc_auc_macro': 1.0,
-            })
+            folds.append(
+                {
+                    "fold": fold_i,
+                    "balanced_accuracy": 1.0,
+                    "f1_macro": 1.0,
+                    "roc_auc_macro": 1.0,
+                }
+            )
             continue
 
-        if model_config.model_type == 'logreg':
+        if model_config.model_type == "logreg":
             clf = LogisticRegression(
                 penalty=model_config.penalty,
-                l1_ratio=model_config.l1_ratio if model_config.penalty == 'elasticnet' else None,
+                l1_ratio=(
+                    model_config.l1_ratio
+                    if model_config.penalty == "elasticnet"
+                    else None
+                ),
                 C=model_config.C,
-                solver='saga',
-                multi_class='multinomial',
+                solver="saga",
+                multi_class="multinomial",
                 max_iter=1000,
                 class_weight=class_weight,
                 random_state=model_config.random_state,
                 n_jobs=training_config.n_jobs,
             )
-        elif model_config.model_type == 'svm':
+        elif model_config.model_type == "svm":
             base = LinearSVC(
                 C=model_config.C,
                 class_weight=class_weight,
@@ -164,7 +174,7 @@ def train_evaluate_linear_model(
                 max_iter=10000,
                 random_state=model_config.random_state,
             )
-            clf = CalibratedClassifierCV(base_estimator=base, method='sigmoid', cv=3)
+            clf = CalibratedClassifierCV(base_estimator=base, method="sigmoid", cv=3)
         else:
             raise ValueError(f"Unsupported model_type: {model_config.model_type}")
         # Fit and evaluate
@@ -184,35 +194,34 @@ def train_evaluate_linear_model(
             ba = 1.0
             f1 = 1.0
             roc_auc = 1.0
-            folds.append({
-                'fold': fold_i,
-                'balanced_accuracy': ba,
-                'f1_macro': f1,
-                'roc_auc_macro': roc_auc,
-            })
+            folds.append(
+                {
+                    "fold": fold_i,
+                    "balanced_accuracy": ba,
+                    "f1_macro": f1,
+                    "roc_auc_macro": roc_auc,
+                }
+            )
             continue
         ba = balanced_accuracy_score(y_test, y_pred)
-        f1 = f1_score(y_test, y_pred, average='macro')
+        f1 = f1_score(y_test, y_pred, average="macro")
         # For ROC AUC compute macro‑averaged one‑vs‑rest
-        roc_auc = roc_auc_score(
-            y_test,
-            y_proba,
-            multi_class='ovr',
-            average='macro'
+        roc_auc = roc_auc_score(y_test, y_proba, multi_class="ovr", average="macro")
+        folds.append(
+            {
+                "fold": fold_i,
+                "balanced_accuracy": ba,
+                "f1_macro": f1,
+                "roc_auc_macro": roc_auc,
+            }
         )
-        folds.append({
-            'fold': fold_i,
-            'balanced_accuracy': ba,
-            'f1_macro': f1,
-            'roc_auc_macro': roc_auc,
-        })
     # Aggregate metrics
     mean_scores = {
-        'balanced_accuracy': float(np.mean([f['balanced_accuracy'] for f in folds])),
-        'f1_macro': float(np.mean([f['f1_macro'] for f in folds])),
-        'roc_auc_macro': float(np.mean([f['roc_auc_macro'] for f in folds])),
+        "balanced_accuracy": float(np.mean([f["balanced_accuracy"] for f in folds])),
+        "f1_macro": float(np.mean([f["f1_macro"] for f in folds])),
+        "roc_auc_macro": float(np.mean([f["roc_auc_macro"] for f in folds])),
     }
     return {
-        'folds': folds,
-        'mean': mean_scores,
+        "folds": folds,
+        "mean": mean_scores,
     }

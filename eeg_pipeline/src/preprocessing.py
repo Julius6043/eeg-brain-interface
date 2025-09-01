@@ -53,11 +53,11 @@ def load_raw_file(raw_path: str, preload: bool = True):
         raise ImportError(
             "MNE-Python is required to load raw files. Please install MNE before running this function."
         )
-    if raw_path.endswith('.fif') or raw_path.endswith('.fif.gz'):
+    if raw_path.endswith(".fif") or raw_path.endswith(".fif.gz"):
         raw = mne.io.read_raw_fif(raw_path, preload=preload)
-    elif raw_path.endswith('.xdf'):
+    elif raw_path.endswith(".xdf"):
         # XDF reading support requires mne.io.read_raw_xdf (>=0.21)
-        if not hasattr(mne.io, 'read_raw_xdf'):
+        if not hasattr(mne.io, "read_raw_xdf"):
             raise NotImplementedError(
                 "Reading XDF files requires mne>=0.21 with the read_raw_xdf function."
             )
@@ -86,7 +86,7 @@ def load_markers(markers_path: str) -> List[Dict[str, float]]:
     list of dict
         List of marker dictionaries.
     """
-    with open(markers_path, 'r') as f:
+    with open(markers_path, "r") as f:
         markers = json.load(f)
     return markers
 
@@ -127,19 +127,19 @@ def preprocess_raw(raw, config: PreprocessingConfig):
 
     # Apply notch filter for line noise removal
     if config.notch_freq is not None:
-        proc.notch_filter(config.notch_freq, verbose='WARNING')
+        proc.notch_filter(config.notch_freq, verbose="WARNING")
 
     # Band‑pass filter to isolate task‑relevant frequency bands
     if config.l_freq is not None or config.h_freq is not None:
-        proc.filter(l_freq=config.l_freq, h_freq=config.h_freq, verbose='WARNING')
+        proc.filter(l_freq=config.l_freq, h_freq=config.h_freq, verbose="WARNING")
 
     # Optional resampling to reduce data size
     if config.resample is not None:
-        proc.resample(config.resample, npad='auto')
+        proc.resample(config.resample, npad="auto")
 
     # Re‑reference
-    if isinstance(config.reference, str) and config.reference == 'average':
-        proc.set_eeg_reference('average', projection=False)
+    if isinstance(config.reference, str) and config.reference == "average":
+        proc.set_eeg_reference("average", projection=False)
     elif isinstance(config.reference, Sequence):
         # Custom reference: average across specified channels
         proc.set_eeg_reference(ref_channels=list(config.reference), projection=False)
@@ -154,7 +154,7 @@ def create_sliding_windows(
     markers: List[Dict[str, float]],
     window_length: float,
     window_overlap: float,
-    label_map: Optional[Dict[str, int]] = None
+    label_map: Optional[Dict[str, int]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Segment the continuous recording into overlapping windows and assign labels.
 
@@ -193,7 +193,7 @@ def create_sliding_windows(
     window_times : ndarray, shape (n_windows,)
         Start time (in seconds) of each window relative to recording.
     """
-    sfreq = raw.info['sfreq']
+    sfreq = raw.info["sfreq"]
     n_channels = len(raw.ch_names)
     data = raw.get_data()  # shape (n_channels, n_samples)
     total_duration = data.shape[1] / sfreq
@@ -207,13 +207,13 @@ def create_sliding_windows(
 
     # Prepare label mapping
     if label_map is None:
-        unique_values = sorted({m['value'] for m in markers})
+        unique_values = sorted({m["value"] for m in markers})
         label_map = {v: i for i, v in enumerate(unique_values)}
 
     # Convert markers to arrays for efficient lookup
-    marker_times = np.array([m['onset_s'] for m in markers])
-    marker_values = [m['value'] for m in markers]
-    group_ids = np.array([m.get('subject', 0) for m in markers])
+    marker_times = np.array([m["onset_s"] for m in markers])
+    marker_values = [m["value"] for m in markers]
+    group_ids = np.array([m.get("subject", 0) for m in markers])
 
     # Preallocate lists to collect valid windows
     X_list: List[np.ndarray] = []
@@ -245,7 +245,11 @@ def create_sliding_windows(
         time_list.append(start)
 
     # Convert lists to arrays
-    X_arr = np.stack(X_list, axis=0) if X_list else np.empty((0, n_channels, window_samples), dtype=np.float32)
+    X_arr = (
+        np.stack(X_list, axis=0)
+        if X_list
+        else np.empty((0, n_channels, window_samples), dtype=np.float32)
+    )
     y_arr = np.array(y_list, dtype=np.int64)
     groups_arr = np.array(group_list, dtype=np.int64)
     times_arr = np.array(time_list, dtype=float)
@@ -278,7 +282,7 @@ def create_epochs_for_erp(
     tmin: float,
     tmax: float,
     event_id: Optional[Dict[str, int]] = None,
-    event_repeated: str = 'drop',
+    event_repeated: str = "drop",
 ) -> Tuple[Any, np.ndarray]:
     """Create MNE epochs around stimulus markers for ERP analysis.
 
@@ -320,14 +324,14 @@ def create_epochs_for_erp(
             "MNE-Python is required to create epochs. Please install MNE before running this function."
         )
     # Create events array: (sample index, 0, event_id)
-    sfreq = raw.info['sfreq']
+    sfreq = raw.info["sfreq"]
     if event_id is None:
-        unique_values = sorted({m['value'] for m in markers})
+        unique_values = sorted({m["value"] for m in markers})
         event_id = {val: i + 1 for i, val in enumerate(unique_values)}
     events_list: List[Tuple[int, int, int]] = []
     for m in markers:
-        onset_sample = int(round(m['onset_s'] * sfreq))
-        events_list.append((onset_sample, 0, event_id[m['value']]))
+        onset_sample = int(round(m["onset_s"] * sfreq))
+        events_list.append((onset_sample, 0, event_id[m["value"]]))
     events = np.array(events_list, dtype=int)
 
     epochs = mne.Epochs(

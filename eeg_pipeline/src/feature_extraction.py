@@ -25,9 +25,7 @@ from .config import FeatureConfig
 
 
 def compute_bandpower_features(
-    windows: np.ndarray,
-    sfreq: float,
-    bands: Dict[str, Tuple[float, float]]
+    windows: np.ndarray, sfreq: float, bands: Dict[str, Tuple[float, float]]
 ) -> np.ndarray:
     """Compute bandpower features from time‑domain windows.
 
@@ -69,7 +67,7 @@ def compute_bandpower_features(
             n_fft=min(256, n_samples),
             n_per_seg=min(128, n_samples),
             n_overlap=0,
-            average='mean',
+            average="mean",
         )
         # Integrate power in each band
         feat_vec = []
@@ -84,9 +82,7 @@ def compute_bandpower_features(
 
 
 def compute_p300_features(
-    epochs,
-    p300_window: Tuple[float, float],
-    picks: Optional[Sequence[str]] = None
+    epochs, p300_window: Tuple[float, float], picks: Optional[Sequence[str]] = None
 ) -> np.ndarray:
     """Compute P300 ERP features from epochs.
 
@@ -141,7 +137,7 @@ def compute_p300_features(
 def fuse_features(
     band_features: np.ndarray,
     erp_features: np.ndarray,
-    align_indices: Optional[Sequence[int]] = None
+    align_indices: Optional[Sequence[int]] = None,
 ) -> np.ndarray:
     """Concatenate spectral and ERP features to form a joint feature vector.
 

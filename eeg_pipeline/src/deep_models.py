@@ -236,7 +236,10 @@ def train_eegnet_crossval(
 
     # Select CV iterator (with fallback if only one group present)
     unique_groups = np.unique(groups)
-    if training_config.cv_strategy == "leave-one-subject-out" and len(unique_groups) < 2:
+    if (
+        training_config.cv_strategy == "leave-one-subject-out"
+        and len(unique_groups) < 2
+    ):
         cv_splits = [(np.arange(len(X)), np.arange(len(X)))]  # single pseudo-fold
     elif training_config.cv_strategy == "leave-one-subject-out":
         cv = LeaveOneGroupOut()
@@ -338,11 +341,15 @@ def train_eegnet_crossval(
                 # Assume labels are 0..K-1; select only columns for present classes
                 proba_subset = proba[:, unique_test]
                 try:
-                    roc_auc = roc_auc_score(y_test, proba_subset, multi_class="ovr", average="macro")
+                    roc_auc = roc_auc_score(
+                        y_test, proba_subset, multi_class="ovr", average="macro"
+                    )
                 except Exception:
                     roc_auc = 1.0
             else:
-                roc_auc = roc_auc_score(y_test, proba, multi_class="ovr", average="macro")
+                roc_auc = roc_auc_score(
+                    y_test, proba, multi_class="ovr", average="macro"
+                )
         folds.append(
             {
                 "fold": fold_i,
