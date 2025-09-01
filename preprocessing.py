@@ -15,6 +15,8 @@ Steps:
 Requires: mne, numpy, matplotlib, pyxdf, scipy
 """
 
+python c:/Users/janni/Documents/GitHub/eeg-brain-interface/preprocessing.py --xdf c:/Users/janni/Documents/GitHub/eeg-brain-interface/data/sub-P001_ses-S001_task-Default_run-001_eeg.xdf --outdir c:/Users/janni/Documents/GitHub/eeg-brain-interface/results
+
 import argparse
 from pathlib import Path
 import sys
