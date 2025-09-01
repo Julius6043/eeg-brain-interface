@@ -9,3 +9,4 @@ torcheeg
 pyriemann
 seaborn
 pyxdf
+pytest

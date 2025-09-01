@@ -85,7 +85,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     print("Extracting ERP (P300) features ...")
     # Create epochs around markers
     epochs, events = create_epochs_for_erp(
-        raw_prep, markers, feat_cfg.erp_interval[0], feat_cfg.erp_interval[1]
+        raw_prep,
+        markers,
+        feat_cfg.erp_interval[0],
+        feat_cfg.erp_interval[1],
+        event_repeated='drop',  # handle duplicate marker timestamps gracefully
     )
     p300_features = compute_p300_features(
         epochs,

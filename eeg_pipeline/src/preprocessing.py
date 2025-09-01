@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Sequence, Optional
+from typing import List, Tuple, Dict, Sequence, Optional, Any
 
 import numpy as np
 
@@ -31,7 +31,7 @@ except ImportError:
 from .config import PreprocessingConfig
 
 
-def load_raw_file(raw_path: str, preload: bool = True) -> 'mne.io.BaseRaw':
+def load_raw_file(raw_path: str, preload: bool = True):
     """Load a raw EEG file.
 
     Parameters
@@ -91,7 +91,7 @@ def load_markers(markers_path: str) -> List[Dict[str, float]]:
     return markers
 
 
-def preprocess_raw(raw: 'mne.io.BaseRaw', config: PreprocessingConfig) -> 'mne.io.BaseRaw':
+def preprocess_raw(raw, config: PreprocessingConfig):
     """Apply standard preprocessing to a raw EEG recording.
 
     The following operations are performed in order:
@@ -150,7 +150,7 @@ def preprocess_raw(raw: 'mne.io.BaseRaw', config: PreprocessingConfig) -> 'mne.i
 
 
 def create_sliding_windows(
-    raw: 'mne.io.BaseRaw',
+    raw,
     markers: List[Dict[str, float]],
     window_length: float,
     window_overlap: float,
@@ -273,12 +273,13 @@ def zscore_windows(X: np.ndarray) -> np.ndarray:
 
 
 def create_epochs_for_erp(
-    raw: 'mne.io.BaseRaw',
+    raw,
     markers: List[Dict[str, float]],
     tmin: float,
     tmax: float,
     event_id: Optional[Dict[str, int]] = None,
-) -> Tuple['mne.Epochs', np.ndarray]:
+    event_repeated: str = 'drop',
+) -> Tuple[Any, np.ndarray]:
     """Create MNE epochs around stimulus markers for ERP analysis.
 
     The markers are converted to an ``events`` array as required by
@@ -300,6 +301,12 @@ def create_epochs_for_erp(
     event_id : dict[str,int], optional
         Mapping from marker values to integer codes. If None, a
         dictionary is generated automatically.
+
+    Parameters
+    ----------
+    event_repeated : str
+        Strategy if events share identical onset sample (passed to
+        ``mne.Epochs``). Common choices: 'drop', 'merge', or 'error'.
 
     Returns
     -------
@@ -332,5 +339,6 @@ def create_epochs_for_erp(
         baseline=(tmin, 0),
         preload=True,
         reject_by_annotation=True,
+        event_repeated=event_repeated,
     )
     return epochs, events

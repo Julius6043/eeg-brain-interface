@@ -8,7 +8,7 @@ try:
 except ImportError:
     mne = None
 
-from eeg_workload_pipeline.src.feature_extraction import compute_bandpower_features, compute_p300_features
+from eeg_pipeline.src.feature_extraction import compute_bandpower_features, compute_p300_features
 
 
 @pytest.mark.skipif(mne is None, reason="MNE is required for PSD computations")

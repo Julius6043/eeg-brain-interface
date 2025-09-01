@@ -84,7 +84,7 @@ def compute_bandpower_features(
 
 
 def compute_p300_features(
-    epochs: 'mne.Epochs',
+    epochs,
     p300_window: Tuple[float, float],
     picks: Optional[Sequence[str]] = None
 ) -> np.ndarray:
@@ -174,8 +174,27 @@ def fuse_features(
                 "If align_indices is None, band_features and erp_features must have the same number of rows."
             )
         return np.hstack([band_features, erp_features])
-    else:
-        fused = []
-        for i, idx in enumerate(align_indices):
-            fused.append(np.concatenate([band_features[idx], erp_features[i]]))
-        return np.array(fused)
+
+    # Build fused matrix with one row per band_feature window.
+    n_windows = band_features.shape[0]
+    n_band_feats = band_features.shape[1]
+    n_erp_feats = erp_features.shape[1] if erp_features.size else 0
+    fused = np.zeros((n_windows, n_band_feats + n_erp_feats), dtype=band_features.dtype)
+    # Copy band features
+    fused[:, :n_band_feats] = band_features
+    if n_erp_feats == 0:
+        return fused
+    # Aggregate ERP features per window (average when multiple epochs map to one window)
+    counts = np.zeros(n_windows, dtype=int)
+    for i, idx in enumerate(align_indices):
+        if idx < 0 or idx >= n_windows or i >= erp_features.shape[0]:
+            continue
+        if counts[idx] == 0:
+            fused[idx, n_band_feats:] = erp_features[i]
+        else:
+            # Running average
+            fused[idx, n_band_feats:] = (
+                fused[idx, n_band_feats:] * counts[idx] + erp_features[i]
+            ) / (counts[idx] + 1)
+        counts[idx] += 1
+    return fused
