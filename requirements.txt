@@ -7,3 +7,4 @@ mne
 matplotlib
 torcheeg 
 pyriemann
+seaborn
