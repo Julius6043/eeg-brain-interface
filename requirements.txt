@@ -8,3 +8,4 @@ matplotlib
 torcheeg 
 pyriemann
 seaborn
+pyxdf
