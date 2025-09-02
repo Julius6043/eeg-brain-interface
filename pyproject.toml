@@ -19,7 +19,9 @@ dependencies = [
     "seaborn",
     "pyxdf",
     "pytest",
-    "psychopy"
+    "braindecode",
+    "pyprep",
+    "mnelab"
 ]
 
 [project.scripts]

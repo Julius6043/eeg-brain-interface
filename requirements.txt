@@ -13,3 +13,5 @@ pytest
 psychopy
 braindecode
 pylsl
+pyprep
+mnelab
