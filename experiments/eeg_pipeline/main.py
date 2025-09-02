@@ -35,7 +35,7 @@ from typing import Optional, Sequence
 import sys
 
 try:
-    from eeg_pipeline.src import train as pipeline_train
+    from experiments.eeg_pipeline.src import train as pipeline_train
 except ImportError as e:  # pragma: no cover
     pipeline_train = None  # type: ignore
     _import_error = e  # type: ignore

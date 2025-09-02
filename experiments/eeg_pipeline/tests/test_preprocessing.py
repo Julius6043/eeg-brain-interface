@@ -8,7 +8,7 @@ try:
 except ImportError:
     mne = None
 
-from eeg_pipeline.src.preprocessing import zscore_windows, create_sliding_windows
+from experiments.eeg_pipeline.src.preprocessing import zscore_windows, create_sliding_windows
 
 
 def test_zscore_windows_simple():

@@ -8,7 +8,7 @@ try:
 except ImportError:
     mne = None
 
-from eeg_pipeline.src.feature_extraction import (
+from experiments.eeg_pipeline.src.feature_extraction import (
     compute_bandpower_features,
     compute_p300_features,
 )

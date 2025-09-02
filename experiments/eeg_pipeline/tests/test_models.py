@@ -8,8 +8,8 @@ try:
 except ImportError:
     sklearn = None
 
-from eeg_pipeline.src.models import train_evaluate_linear_model
-from eeg_pipeline.src.config import ModelConfig, TrainingConfig
+from experiments.eeg_pipeline.src.models import train_evaluate_linear_model
+from experiments.eeg_pipeline.src.config import ModelConfig, TrainingConfig
 
 
 @pytest.mark.skipif(sklearn is None, reason="scikit-learn is required for this test")
