@@ -18,8 +18,9 @@ modules can operate on clean, segmented signals.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from typing import List, Tuple, Dict, Sequence, Optional, Any
+import re
+from pathlib import Path
+from typing import List, Tuple, Dict, Sequence, Optional, Any, Iterable
 
 import numpy as np
 
@@ -29,6 +30,13 @@ except ImportError:
     mne = None  # type: ignore
 
 from .config import PreprocessingConfig
+
+# Optional heavy dependency used only for raw XDF access when mne.read_raw_xdf
+# is unavailable / insufficient.
+try:  # pyxdf is tiny, safe to import; if missing we degrade gracefully
+    import pyxdf  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    pyxdf = None  # type: ignore
 
 
 def load_raw_file(raw_path: str, preload: bool = True):
@@ -346,3 +354,476 @@ def create_epochs_for_erp(
         event_repeated=event_repeated,
     )
     return epochs, events
+
+
+# ---------------------------------------------------------------------------
+# Batch XDF ingestion utilities (extension – integrates outer script logic)
+# ---------------------------------------------------------------------------
+def find_xdf_files(root: str | Path) -> List[Path]:
+    """Recursively discover all ``.xdf`` files below *root*.
+
+    Parameters
+    ----------
+    root : path-like
+        Directory under which to search.
+
+    Returns
+    -------
+    list[Path]
+        Sorted list of discovered XDF file paths.
+    """
+    root_path = Path(root)
+    files = sorted(p for p in root_path.rglob("*.xdf") if p.is_file())
+    return files
+
+
+def _load_xdf_safe(xdf_path: Path):  # pragma: no cover (I/O heavy)
+    """Robust XDF loader with fallbacks (mirrors notebook helper).
+
+    This uses ``pyxdf`` directly instead of ``mne.io.read_raw_xdf`` to gain
+    access to the marker stream separately and apply custom channel name &
+    scaling heuristics. If *pyxdf* is missing we raise a clear error.
+    """
+    if pyxdf is None:
+        raise ImportError(
+            "pyxdf is required for direct XDF parsing. Install with 'pip install pyxdf'."
+        )
+    try:
+        streams, header = pyxdf.load_xdf(
+            str(xdf_path),
+            synchronize_clocks=True,
+            dejitter_timestamps=True,
+            handle_clock_resets=True,
+        )
+    except Exception as e:  # fallback w/out advanced options
+        print(
+            f"[WARN] Full XDF load failed ({xdf_path.name}): {e}\n[INFO] Retrying simplified mode …"
+        )
+        streams, header = pyxdf.load_xdf(
+            str(xdf_path),
+            synchronize_clocks=False,
+            dejitter_timestamps=False,
+            handle_clock_resets=False,
+        )
+    return streams, header
+
+
+def _safe_get(meta: Dict[str, Any], key: str, default: Any) -> Any:
+    try:
+        v = meta.get(key, default)
+        if isinstance(v, (list, tuple)) and len(v) == 1:
+            return v[0]
+        return v
+    except Exception:
+        return default
+
+
+def _pick_streams(
+    streams: Iterable[Dict[str, Any]],
+) -> Tuple[
+    Dict[str, Any], Optional[Dict[str, Any]]
+]:  # pragma: no cover - straightforward
+    eeg_stream = None
+    marker_stream = None
+    for st in streams:
+        info = st.get("info", {})
+        stype = str(_safe_get(info, "type", "")).lower()
+        name = str(_safe_get(info, "name", "")).lower()
+        ch_n = int(float(_safe_get(info, "channel_count", "0")))
+        if ("eeg" in stype or "unicorn" in name) and ch_n >= 1:
+            eeg_stream = st
+        if "marker" in stype or "markers" in name:
+            marker_stream = st
+    if eeg_stream is None:
+        raise RuntimeError("No EEG stream found in XDF file.")
+    return eeg_stream, marker_stream
+
+
+def xdf_to_raw_and_markers(
+    xdf_path: Path,
+    channels_keep: Optional[Sequence[str]] = None,
+    montage: str | None = "standard_1020",
+) -> Tuple[Any, List[Dict[str, Any]]]:  # raw, markers list
+    """Convert an XDF recording to an MNE Raw + structured markers list.
+
+    Heuristics borrowed from the external notebook: auto µV→V scaling if the
+    median absolute value suggests microvolt units; optional channel subset; a
+    best‑effort extraction of channel names from nested descriptors.
+    Marker timing is converted to onset relative to the first EEG timestamp.
+    """
+    if mne is None:
+        raise ImportError("MNE-Python required for building Raw object.")
+    streams, _ = _load_xdf_safe(xdf_path)
+    eeg_stream, marker_stream = _pick_streams(streams)
+
+    info = eeg_stream["info"]
+    fs = float(_safe_get(info, "nominal_srate", 0))
+    data = np.asarray(eeg_stream["time_series"], dtype=float).T  # (n_ch, n_times)
+    med_abs = float(np.nanmedian(np.abs(data)))
+    if med_abs > 1e-3:  # looks like µV
+        data *= 1e-6
+    # channel names
+    ch_names: List[str] = []
+    try:
+        desc = info.get("desc", {})
+        channels = desc.get("channels", {}).get("channel")
+        if isinstance(channels, dict):  # single channel case
+            channels = [channels]
+        if channels:
+            for ch in channels:
+                label = ch.get("label", "")
+                if isinstance(label, list):
+                    label = label[0] if label else ""
+                ch_names.append(str(label) if label else f"EEG{len(ch_names)+1}")
+    except Exception:
+        pass
+    if not ch_names or len(ch_names) != data.shape[0]:
+        ch_names = [f"EEG{i+1}" for i in range(data.shape[0])]
+    raw = mne.io.RawArray(data, mne.create_info(ch_names, fs, ch_types="eeg"))
+    # restrict channels
+    if channels_keep:
+        keep = [c for c in channels_keep if c in raw.ch_names]
+        if keep:
+            raw.pick(keep)
+    else:
+        # standardize to first 8 if more provided
+        if len(raw.ch_names) > 8:
+            raw.pick(raw.ch_names[:8])
+    if montage:
+        try:
+            raw.set_montage(montage, on_missing="ignore")
+        except Exception:
+            pass
+
+    # markers
+    markers: List[Dict[str, Any]] = []
+    if marker_stream is not None:
+        raw_ts0 = float(eeg_stream["time_stamps"][0])
+        m_values = marker_stream.get("time_series", [])
+        # flatten nested lists
+        flat_vals = [v[0] if isinstance(v, (list, tuple)) else v for v in m_values]
+        m_stamps = marker_stream.get("time_stamps", [])
+        for stamp, val in zip(m_stamps, flat_vals):
+            onset = float(stamp) - raw_ts0
+            if onset < 0:
+                continue
+            markers.append({"time_stamp": float(stamp), "value": val, "onset_s": onset})
+    return raw, markers
+
+
+_SUB_RE = re.compile(r"sub-([A-Za-z0-9]+)")
+_SES_RE = re.compile(r"ses-([A-Za-z0-9]+)")
+
+
+def _infer_subject_session(path: Path) -> Tuple[str, str]:
+    """Infer subject / session identifiers from the *path* tokens."""
+    subj = "unknown"
+    ses = "unknown"
+    for part in path.parts:
+        m1 = _SUB_RE.search(part)
+        if m1:
+            subj = m1.group(1)
+        m2 = _SES_RE.search(part)
+        if m2:
+            ses = m2.group(1)
+    return subj, ses
+
+
+def batch_preprocess_xdf(
+    data_root: str | Path,
+    config: PreprocessingConfig,
+    out_dir: str | Path,
+    channels_keep: Optional[Sequence[str]] = None,
+    save_fif: bool = True,
+    save_markers: bool = True,
+) -> List[Dict[str, Any]]:
+    """Process all XDF recordings under *data_root* using *config*.
+
+    For every discovered file we:
+      1. Parse XDF into Raw & markers.
+      2. Apply standard preprocessing (notch/band‑pass/resample/reference).
+      3. Persist optional artefacts (initial + cleaned FIF, markers JSON).
+
+    Parameters
+    ----------
+    data_root : path-like
+        Root directory containing nested subject/session folders.
+    config : PreprocessingConfig
+        Preprocessing parameters.
+    out_dir : path-like
+        Base output directory (a subfolder per recording is created).
+    channels_keep : sequence[str], optional
+        If provided, restrict to these channels (subset present in each file).
+    save_fif : bool
+        Whether to write raw_initial / raw_clean FIF files.
+    save_markers : bool
+        Whether to write markers JSON next to processed data.
+
+    Returns
+    -------
+    list of dict
+        Each entry contains keys: 'raw_initial', 'raw_clean', 'markers',
+        'subject', 'session', 'source_path', 'window_config' (if windowing is
+        later extended – placeholder for future feature integration).
+    """
+    out_base = Path(out_dir)
+    out_base.mkdir(parents=True, exist_ok=True)
+    results: List[Dict[str, Any]] = []
+    xdf_files = find_xdf_files(data_root)
+    if not xdf_files:
+        print(f"[WARN] No .xdf files found under {data_root}")
+        return results
+    print(f"[INFO] Found {len(xdf_files)} XDF file(s) under {data_root}")
+    for xdf in xdf_files:
+        subj, ses = _infer_subject_session(xdf)
+        rel_name = xdf.stem
+        rec_out = out_base / f"sub-{subj}_ses-{ses}" / rel_name
+        rec_out.mkdir(parents=True, exist_ok=True)
+        print(f"[INFO] Processing {xdf} -> {rec_out}")
+        try:
+            raw_init, markers = xdf_to_raw_and_markers(xdf, channels_keep)
+        except Exception as e:  # pragma: no cover - robust batch
+            print(f"[ERROR] Failed to load {xdf.name}: {e}")
+            continue
+        # Save initial raw & markers (before processing)
+        raw_clean = preprocess_raw(raw_init, config)
+
+        # --- Extended metadata & annotation enrichment (inspired by notebook) ---
+        # Build marker DataFrame structure (without importing pandas if not installed)
+        # We attempt simple pattern extraction for blocks / trials / sequences.
+        import math
+
+        try:  # optional pandas usage
+            import pandas as _pd  # type: ignore
+        except Exception:  # pragma: no cover - optional
+            _pd = None  # type: ignore
+
+        block_pattern = re.compile(r"main_block_(\d+)_start")
+        trial_pattern = re.compile(r"main_block_(\d+)_trial_(\d+)_on")
+        sequence_prefix = "sequence_"
+        targets_prefix = "targets_"
+        block_info: Dict[int, Dict[str, Any]] = {}
+        current_block: Optional[int] = None
+        for m in markers:
+            val = str(m.get("value", ""))
+            onset = float(m.get("onset_s", math.nan))
+            mb = block_pattern.match(val)
+            if mb:
+                current_block = int(mb.group(1))
+                block_info.setdefault(current_block, {})["start"] = onset
+                continue
+            if val.startswith(sequence_prefix) and current_block is not None:
+                seq = [
+                    s.strip()
+                    for s in val[len(sequence_prefix) :].split(",")
+                    if s.strip()
+                ]
+                block_info.setdefault(current_block, {})["seq"] = seq
+                continue
+            if val.startswith(targets_prefix) and current_block is not None:
+                tgt = [
+                    t.strip()
+                    for t in val[len(targets_prefix) :].split(",")
+                    if t.strip().isdigit()
+                ]
+                block_info.setdefault(current_block, {})["targets"] = [
+                    int(t) for t in tgt
+                ]
+                continue
+            mt = trial_pattern.match(val)
+            if mt:
+                b_id = int(mt.group(1))
+                tr_id = int(mt.group(2))
+                block_info.setdefault(b_id, {}).setdefault("trials", []).append(
+                    {
+                        "trial": tr_id,
+                        "onset_s": onset,
+                    }
+                )
+        # Close block ends
+        rec_dur = raw_init.n_times / raw_init.info["sfreq"]
+        sorted_blocks = sorted(block_info.keys())
+        for i, b in enumerate(sorted_blocks):
+            start = block_info[b].get("start", 0.0)
+            end = rec_dur
+            if i + 1 < len(sorted_blocks):
+                nxt = sorted_blocks[i + 1]
+                end = block_info[nxt].get("start", rec_dur)
+            block_info[b]["end"] = end
+            block_info[b]["dur"] = max(0.0, end - start)
+
+        # Infer n-back difficulty by minimal symmetric difference (1..3)
+        def infer_nback(seq: List[str], targets: List[int], max_n=3):
+            tgt_set = set(targets or [])
+            best = (None, float("inf"), -1)  # (n, diff, overlap)
+            best_pred = []
+            for n in range(1, max_n + 1):
+                pred = []
+                for idx in range(n, len(seq)):
+                    if seq[idx] == seq[idx - n]:
+                        pred.append(idx + 1)  # 1-based index
+                pred_set = set(pred)
+                diff = len(pred_set ^ tgt_set)
+                overlap = len(pred_set & tgt_set)
+                if (diff < best[1]) or (diff == best[1] and overlap > best[2]):
+                    best = (n, diff, overlap)
+                    best_pred = pred
+            return best[0], {"diff": best[1], "overlap": best[2], "pred": best_pred}
+
+        for b in sorted_blocks:
+            seq = block_info[b].get("seq", [])
+            tgs = block_info[b].get("targets", [])
+            if seq and tgs:
+                nb, info = infer_nback(seq, tgs)
+                block_info[b]["nback"] = nb
+                block_info[b]["match_info"] = info
+
+        # Create annotations for blocks with inferred n-back
+        if mne is not None and sorted_blocks:
+            onsets = []
+            durs = []
+            descs = []
+            for b in sorted_blocks:
+                nb = block_info[b].get("nback")
+                if nb is None:
+                    continue
+                st = float(block_info[b].get("start", 0.0))
+                dur = float(block_info[b].get("dur", 0.0))
+                if dur <= 0:
+                    continue
+                onsets.append(st)
+                durs.append(dur)
+                descs.append(f"nback_{nb}_block_{b}")
+            if onsets:
+                anns = mne.Annotations(
+                    onset=onsets, duration=durs, description=descs, orig_time=None
+                )
+                raw_clean.set_annotations(
+                    raw_clean.annotations + anns if len(raw_clean.annotations) else anns
+                )
+
+        # Optional export of marker tables (CSV/JSON) when pandas present
+        if _pd is not None and save_markers and markers:
+            df_markers = _pd.DataFrame(markers)
+            df_markers.to_csv(rec_out / "markers_all.csv", index=False)
+            df_markers.to_json(rec_out / "markers_all.json", orient="records", indent=2)
+            # Blocks summary
+            if block_info:
+                rows = []
+                for b in sorted_blocks:
+                    rows.append(
+                        {
+                            "block": b,
+                            "start_s": block_info[b].get("start"),
+                            "end_s": block_info[b].get("end"),
+                            "dur_s": block_info[b].get("dur"),
+                            "nback": block_info[b].get("nback"),
+                            "n_seq": len(block_info[b].get("seq", [])),
+                            "n_targets": len(block_info[b].get("targets", [])),
+                            "n_trials": len(block_info[b].get("trials", [])),
+                        }
+                    )
+                _pd.DataFrame(rows).to_csv(rec_out / "blocks_inferred.csv", index=False)
+        # --- End enrichment ---
+        rec_info: Dict[str, Any] = {
+            "raw_initial": raw_init,
+            "raw_clean": raw_clean,
+            "markers": markers,
+            "subject": subj,
+            "session": ses,
+            "source_path": str(xdf),
+        }
+        if save_fif:  # pragma: no cover - file I/O
+            init_path = rec_out / "raw_initial_eeg.fif"
+            clean_path = rec_out / "raw_clean.fif"
+            raw_init.save(str(init_path), overwrite=True)
+            raw_clean.save(str(clean_path), overwrite=True)
+        if save_markers and markers:  # pragma: no cover - file I/O
+            with open(rec_out / "markers.json", "w", encoding="utf-8") as f:
+                json.dump(markers, f, indent=2)
+        results.append(rec_info)
+    return results
+
+
+def _build_arg_parser_batch():  # pragma: no cover - CLI helper
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        description="Batch preprocessing of all .xdf recordings under a root directory."
+    )
+    ap.add_argument(
+        "--data-root",
+        required=True,
+        help="Root folder containing .xdf files (recursively)",
+    )
+    ap.add_argument(
+        "--out-dir", required=True, help="Output base directory for processed artefacts"
+    )
+    ap.add_argument(
+        "--notch",
+        type=float,
+        default=50.0,
+        help="Notch frequency (Hz), set 0 to disable",
+    )
+    ap.add_argument("--l-freq", type=float, default=1.0, help="Lower band-pass (Hz)")
+    ap.add_argument("--h-freq", type=float, default=40.0, help="Upper band-pass (Hz)")
+    ap.add_argument(
+        "--resample",
+        type=float,
+        default=0.0,
+        help="Resample frequency (Hz, 0 = keep native)",
+    )
+    ap.add_argument(
+        "--reference",
+        default="average",
+        help="Reference mode: 'average' or comma list of channels",
+    )
+    ap.add_argument(
+        "--channels",
+        default="",
+        help="Comma separated subset of channels to keep (optional)",
+    )
+    ap.add_argument(
+        "--no-save-fif",
+        action="store_true",
+        help="Do not persist FIF files (in-memory only)",
+    )
+    ap.add_argument(
+        "--no-save-markers", action="store_true", help="Do not write markers JSON files"
+    )
+    return ap
+
+
+def main_batch():  # pragma: no cover - CLI entrypoint
+    ap = _build_arg_parser_batch()
+    args = ap.parse_args()
+    reference: str | Sequence[str] | None
+    if args.reference.lower() == "none":
+        reference = None
+    elif "," in args.reference:
+        reference = [c.strip() for c in args.reference.split(",") if c.strip()]
+    else:
+        reference = args.reference
+    cfg = PreprocessingConfig(
+        notch_freq=None if args.notch in (0, -1) else args.notch,
+        l_freq=args.l_freq,
+        h_freq=args.h_freq,
+        resample=None if args.resample in (0, -1) else args.resample,
+        reference=reference,
+    )
+    channels_keep = [c.strip() for c in args.channels.split(",") if c.strip()] or None
+    batch_preprocess_xdf(
+        data_root=args.data_root,
+        config=cfg,
+        out_dir=args.out_dir,
+        channels_keep=channels_keep,
+        save_fif=not args.no_save_fif,
+        save_markers=not args.no_save_markers,
+    )
+
+
+if __name__ == "__main__":  # pragma: no cover
+    # Provide a lightweight CLI for batch processing independent of the training
+    # pipeline. Example:
+    #   python -m eeg_pipeline.src.preprocessing --data-root data --out-dir processed
+    main_batch()
