@@ -1,0 +1,33 @@
+[project]
+name = "eeg-pipeline"
+version = "0.1.0"
+authors = [
+    {name = "Rami Wahed", email = "52122856+ramiwahed@users.noreply.github.com"}
+]
+description = "Brain pattern recognition"
+requires-python = ">=3.11"
+dependencies = [
+    "torch",
+    "numpy",
+    "scikit-learn",
+    "matplotlib",
+    "mne",
+    "scipy",
+    "torchvision",
+    "torcheeg",
+    "pyriemann",
+    "seaborn",
+    "pyxdf",
+    "pytest"
+]
+
+[project.scripts]
+eeg-pipeline = "eeg_pipeline.main:main"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["eeg_pipeline*"]
