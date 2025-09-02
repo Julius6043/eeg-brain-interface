@@ -11,3 +11,5 @@ seaborn
 pyxdf
 pytest
 psychopy
+braindecode
+pylsl
