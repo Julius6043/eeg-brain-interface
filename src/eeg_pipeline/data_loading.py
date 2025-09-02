@@ -153,10 +153,54 @@ def get_session_paths(experiment_sessions: List[Path]) -> Tuple[Optional[Path], 
     return sess01_path, sess02_path
 
 
+def plot_raw_segment(raw: mne.io.Raw, start_s: float, dur_s: float, out_png: Optional[Path] = None, title=""):
+    PLOT_UV = 500.0
+    fig = raw.plot(start=start_s, duration=dur_s, show=True,
+                   decim=1, show_first_samp=False, show_options=False,
+                   scalings={'eeg': PLOT_UV * 1e-6})
+    if title:
+        fig.suptitle(title)
+    if out_png:
+        fig.savefig(out_png, dpi=150)
+    return fig
+
+
+def preprocess_raw(raw: Raw, participant_name: str, session_type: str) -> Raw:
+    MAINS = 50
+    BANDPASS = (1.0, 40.0)
+    RUN_ICA = False
+
+    raw.notch_filter(freqs=[MAINS, 2 * MAINS], picks="eeg", verbose="WARNING")
+
+    # Band-pass
+    l_freq, h_freq = BANDPASS
+    raw.filter(l_freq=l_freq, h_freq=h_freq, picks="eeg",
+               method="fir", phase="zero", fir_window="hamming", verbose="WARNING")
+
+    # Average re-reference
+    raw.set_eeg_reference("average")
+
+    # Quick global plots AFTER cleaning
+    # plot_raw_segment(raw, start_s=0.0, dur_s=dur, out_png=OUTDIR / "raw_after.png",
+    #                  title=f"Raw (first {dur:.1f}s), after notch+bandpass+reref")
+    #
+    # fig_psd2 = raw_clean.plot_psd(fmin=1, fmax=120, show=True)
+    # fig_psd2.suptitle("PSD (after notch+band-pass+reref)")
+    # fig_psd2.savefig(OUTDIR / "psd_after.png", dpi=150)
+    #
+    # # Save cleaned raw
+    # raw_clean.save(str(OUTDIR / "raw_clean.fif"), overwrite=True)
+
+
 def process_session(session_data: SessionData) -> None:
     print(f"Processing session for participant {session_data.participant_name}")
-    # Add your session processing logic here
-    pass
+
+    for sess, raw in [("indoor", session_data.indoor_session), ("outdoor", session_data.outdoor_session)]:
+        if raw is not None:
+            print(f"Processing {sess} session")
+            preprocess_raw(raw, session_data.participant_name, sess)
+        else:
+            print(f"No {sess} session data available.")
 
 
 def convert_xdf_to_mne():
@@ -170,41 +214,31 @@ def convert_xdf_to_mne():
 
     sessions = []
     for experiment_dir in experiments_dir:
-        participant_name = experiment_dir.name.split("_")[-1]
-        experiment_sessions = list(experiment_dir.rglob("*.xdf"))
-        assert (len(experiment_sessions) <= 2)
-
-        indoor_session, outdoor_session = get_session_paths(experiment_sessions)
-
-        indoor_session, indoor_markers = load_session_data(indoor_session)
-        outdoor_session, outdoor_markers = load_session_data(outdoor_session)
-
-        session_data = SessionData(participant_name,
-                                   indoor_session=indoor_session,
-                                   indoor_markers=indoor_markers,
-                                   outdoor_session=outdoor_session,
-                                   outdoor_markers=outdoor_markers)
+        session_data = getopt_session_data(experiment_dir)
 
         sessions.append(session_data)
-        # Process indoor session
-        # TODO
+
         process_session(session_data)
 
-        # print(f"Converting file: {xdf_file_path}")
-        #
-        # print(f"[INFO] Loading XDF: {xdf_file_path}")
-        # streams, header = load_xdf_safe(xdf_file_path)
-        # print(f"[INFO] Loaded {len(streams)} stream(s)")
-        #
-        # eeg_stream, marker_stream = pick_streams(streams)
-        # raw = eeg_stream_to_raw(
-        #     eeg_stream, channels_keep=None, montage="standard_1020"
-        # )
-        #
-        # outdir = Path(__file__).parent.parent.parent / "results"
-        # raw_init_fif = outdir / f"experiment_{f.name}.fif"
-        # raw.save(str(raw_init_fif), overwrite=True)
     print(sessions)
+
+
+def getopt_session_data(experiment_dir: Path) -> SessionData:
+    participant_name = experiment_dir.name.split("_")[-1]
+    experiment_sessions = list(experiment_dir.rglob("*.xdf"))
+    assert (len(experiment_sessions) <= 2)
+
+    indoor_session, outdoor_session = get_session_paths(experiment_sessions)
+
+    indoor_session, indoor_markers = load_session_data(indoor_session)
+    outdoor_session, outdoor_markers = load_session_data(outdoor_session)
+
+    session_data = SessionData(participant_name,
+                               indoor_session=indoor_session,
+                               indoor_markers=indoor_markers,
+                               outdoor_session=outdoor_session,
+                               outdoor_markers=outdoor_markers)
+    return session_data
 
 
 if __name__ == '__main__':
