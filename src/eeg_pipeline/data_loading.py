@@ -5,13 +5,17 @@ from typing import Optional, List, Tuple
 import mne
 import numpy as np
 import pyxdf
+from mne.io import Raw
+import pandas as pd
 
 
 @dataclass
 class SessionData:
     participant_name: str
-    indoor_session: Path
-    outdoor_session: Path
+    indoor_session: Raw
+    indoor_markers: pd.DataFrame
+    outdoor_session: Raw
+    outdoor_markers: pd.DataFrame
 
 
 def load_xdf_safe(path: Path):
@@ -117,15 +121,36 @@ def eeg_stream_to_raw(
     return raw
 
 
-def load_session_data(sessions: dict) -> None:
-    for session_type, xdf_file_path in sessions.items():
-        print(f"Loading session from {xdf_file_path}")
-        streams, header = load_xdf_safe(xdf_file_path)
-        eeg_stream, marker_stream = pick_streams(streams)
-        raw = eeg_stream_to_raw(
-            eeg_stream, channels_keep=None, montage="standard_1020"
-        )
-        sessions[session_type] = raw
+def load_session_data(session: Path) -> Tuple[Raw, Optional[pd.DataFrame]]:
+    if session is None:
+        return None, None
+    print(f"Loading session from {session}")
+    streams, header = load_xdf_safe(session)
+    eeg_stream, marker_stream = pick_streams(streams)
+    raw = eeg_stream_to_raw(
+        eeg_stream, channels_keep=None, montage="standard_1020"
+    )
+
+    print(f"Loading markers from {session}")
+    marker_csv = list(session.parent.parent.glob("*.csv"))
+    if not marker_csv:
+        return raw, None
+    return raw, pd.read_csv(marker_csv[0])
+
+
+def get_session_paths(experiment_sessions: List[Path]) -> Tuple[Optional[Path], Optional[Path]]:
+    sess01_path = None
+    sess02_path = None
+
+    for session in experiment_sessions:
+        if session.parent.parent.name == "ses-S001":
+            sess01_path = session
+        elif session.parent.parent.name == "ses-S002":
+            sess02_path = session
+        else:
+            print(f"Unbekannter Pfad: {session}")
+
+    return sess01_path, sess02_path
 
 
 def process_session(session_data: SessionData) -> None:
@@ -143,24 +168,24 @@ def convert_xdf_to_mne():
         print(f"No experiments in folder {data_dir} found.")
         return None
 
+    sessions = []
     for experiment_dir in experiments_dir:
         participant_name = experiment_dir.name.split("_")[-1]
         experiment_sessions = list(experiment_dir.rglob("*.xdf"))
-        assert (len(experiment_sessions) >= 2)
+        assert (len(experiment_sessions) <= 2)
 
-        sessions = {}
-        for session in experiment_sessions:
-            if session.parent.parent.name == "ses-S001":
-                sessions['indoor'] = session
-            elif session.parent.parent.name == "ses-S002":
-                sessions['outdoor'] = session
-            else:
-                print(f"Unbekannter Pfad: {session}")
+        indoor_session, outdoor_session = get_session_paths(experiment_sessions)
 
-        load_session_data(sessions)
+        indoor_session, indoor_markers = load_session_data(indoor_session)
+        outdoor_session, outdoor_markers = load_session_data(outdoor_session)
 
-        session_data = SessionData(participant_name, sessions['indoor'], sessions['outdoor'])
+        session_data = SessionData(participant_name,
+                                   indoor_session=indoor_session,
+                                   indoor_markers=indoor_markers,
+                                   outdoor_session=outdoor_session,
+                                   outdoor_markers=outdoor_markers)
 
+        sessions.append(session_data)
         # Process indoor session
         # TODO
         process_session(session_data)
@@ -179,6 +204,7 @@ def convert_xdf_to_mne():
         # outdir = Path(__file__).parent.parent.parent / "results"
         # raw_init_fif = outdir / f"experiment_{f.name}.fif"
         # raw.save(str(raw_init_fif), overwrite=True)
+    print(sessions)
 
 
 if __name__ == '__main__':

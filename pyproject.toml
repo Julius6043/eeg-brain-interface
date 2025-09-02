@@ -15,6 +15,7 @@ dependencies = [
     "scipy",
     "torchvision",
     "torcheeg",
+    "pandas",
     "pyriemann",
     "seaborn",
     "pyxdf",
