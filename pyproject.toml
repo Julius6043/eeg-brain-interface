@@ -24,6 +24,7 @@ dependencies = [
     "pyprep",
     "mnelab",
     "pandas",
+    "autoreject"
 ]
 
 [project.scripts]
