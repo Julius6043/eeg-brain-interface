@@ -39,10 +39,15 @@ import json
 import logging
 import inspect
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Sequence
+from typing import Dict, List, Optional, Tuple, Sequence, Any, TYPE_CHECKING
 
 import numpy as np
 import mne
+import re
+from datetime import datetime, timezone
+
+if TYPE_CHECKING:  # only for type hints; avoids runtime import if pandas missing
+    import pandas as pd
 
 # -----------------------------------------------------------------------------
 # Logging Setup (module level logger). Script / CLI initialisiert Level & Format.
@@ -84,6 +89,263 @@ def find_xdf_files(in_dir: Path, pattern: str = "*.xdf") -> List[Path]:
         "Found %d XDF files (pattern=%s) under %s", len(files), pattern, in_dir
     )
     return files
+
+
+# -----------------------------------------------------------------------------
+# Helper: Subject / Session Parsing & Marker CSV Handling
+# -----------------------------------------------------------------------------
+def parse_subject_session(xdf_path: Path) -> Dict[str, Any]:
+    """Parse subject & session information from the file path.
+
+    Expected directory layout (as provided):
+        data/
+          sub-P001_jannik/
+            ses-S001/
+              eeg/ <file.xdf>
+            ses-S002/
+              eeg/ <file.xdf>
+
+    We extract:
+        * subject_folder   = 'sub-P001_jannik'
+        * subject_code     = 'sub-P001'
+        * subject_label    = remaining part after first underscore (if any)
+        * session_folder   = 'ses-S001'
+        * session_code     = 'ses-S001'
+        * session_number   = 1 (int)
+        * environment      = 'lab' (session 1) / 'cafeteria' (session 2) else 'unknown'
+
+    The function is defensive: if pattern not matched, fields fall back to 'unknown'.
+    """
+    # default values
+    info: Dict[str, Any] = {
+        "subject_folder": "unknown",
+        "subject_code": "unknown",
+        "subject_label": "unknown",
+        "session_folder": "unknown",
+        "session_code": "unknown",
+        "session_number": None,
+        "environment": "unknown",
+    }
+    try:
+        # Walk upwards: .../sub-P001_jannik/ses-S001/eeg/file.xdf
+        eeg_dir = xdf_path.parent  # 'eeg'
+        session_dir = eeg_dir.parent  # 'ses-S001'
+        subject_dir = session_dir.parent  # 'sub-P001_jannik'
+        info["session_folder"] = session_dir.name
+        info["subject_folder"] = subject_dir.name
+        # Session code/number
+        session_match = re.search(r"ses-?S?(\d+)", session_dir.name, re.IGNORECASE)
+        if session_match:
+            snum = int(session_match.group(1))
+            info["session_number"] = snum
+            info["session_code"] = f"ses-S{snum:03d}"
+            if snum == 1:
+                info["environment"] = "lab"
+            elif snum == 2:
+                info["environment"] = "cafeteria"
+        # Subject code & label
+        subj_match = re.match(r"(sub-[^_]+)(?:_(.+))?", subject_dir.name, re.IGNORECASE)
+        if subj_match:
+            info["subject_code"] = subj_match.group(1)
+            if subj_match.lastindex and subj_match.group(2):
+                info["subject_label"] = subj_match.group(2)
+    except Exception:
+        LOGGER.debug("parse_subject_session failed for %s", xdf_path)
+    return info
+
+
+def find_marker_csv(xdf_path: Path) -> Optional[Path]:
+    """Return path to marker CSV file for a given XDF path if present.
+
+    Strategy: Look in the *session* directory (parent of 'eeg') for a file
+    whose name starts with 'marker_log' and ends in '.csv'. If multiple, pick
+    the first (sorted).
+    """
+    try:
+        session_dir = xdf_path.parent.parent
+    except Exception:
+        return None
+    candidates = sorted(session_dir.glob("marker_log*.csv"))
+    return candidates[0] if candidates else None
+
+
+def load_marker_csv(marker_csv: Path) -> Optional[Any]:
+    """Load a marker CSV (columns: marker,timestamp) into a DataFrame.
+
+    Returns None if pandas not installed or file malformed.
+    """
+    try:
+        import pandas as _pd  # type: ignore
+    except Exception:  # pragma: no cover
+        LOGGER.warning(
+            "pandas not installed -> cannot read marker csv %s", marker_csv.name
+        )
+        return None
+    try:
+        df = _pd.read_csv(marker_csv)
+    except Exception as e:  # pragma: no cover
+        LOGGER.warning("Failed to read marker csv %s: %s", marker_csv.name, e)
+        return None
+    expected_cols = {c.lower() for c in df.columns}
+    if not {"marker", "timestamp"}.issubset(expected_cols):
+        LOGGER.warning(
+            "CSV %s missing required columns 'marker','timestamp'", marker_csv.name
+        )
+        return None
+    # Normalize column names
+    df.columns = [c.lower() for c in df.columns]
+    return df
+
+
+def integrate_csv_markers(raw: mne.io.BaseRaw, df_markers: Any) -> int:
+    """Integrate external CSV markers as MNE Annotations.
+
+    We assume the CSV timestamps are *monotonic* and share a common start time.
+    As we lack absolute alignment with the XDF internal clock, we normalize
+    timestamps to start at 0 and treat them as seconds relative to recording start.
+
+    This approximation is typical when only relative ordering is relevant.
+    Returns number of added annotations.
+    """
+    if raw.n_times == 0:
+        # Cannot attach annotations to an empty Raw (no time base)
+        return 0
+    if df_markers is None or getattr(df_markers, "empty", True):
+        return 0
+    try:
+        ts = df_markers["timestamp"].astype(float).to_numpy()
+        markers = df_markers["marker"].astype(str).fillna("").to_list()
+    except Exception:
+        return 0
+    if len(ts) == 0:
+        return 0
+    onset = ts - ts[0]  # relative onset (seconds)
+    # Build annotations with zero duration
+    new_ann = mne.Annotations(
+        onset=onset, duration=[0.0] * len(onset), description=markers
+    )
+    if hasattr(raw, "annotations") and raw.annotations is not None:
+        raw.set_annotations(raw.annotations + new_ann, emit_warning=False)
+    else:
+        raw.set_annotations(new_ann, emit_warning=False)
+    return len(onset)
+
+
+# -----------------------------------------------------------------------------
+# N-Back Difficulty Extraction (Block-wise)
+# -----------------------------------------------------------------------------
+def _extract_nback_block(
+    sequence: List[str], targets: List[int], is_first: bool
+) -> int:
+    """Infer n-back difficulty for a single block.
+
+    Logic per provided external script:
+        * First block forced to 0-back (training / baseline)
+        * For each listed target index t we inspect sequence[t-k] (k=1..3)
+          and count matches; n with highest count chosen.
+    Returns integer in {0,1,2,3}.
+    """
+    if is_first:
+        return 0
+    # Guard: skip if malformed
+    if not sequence or not targets:
+        return 0
+    n_vals = [0, 0, 0, 0]  # index = n
+    for t in targets:
+        # ensure indices exist
+        if t < 0 or t >= len(sequence):
+            continue
+        letter_t = sequence[t]
+        if t - 1 >= 0 and letter_t == sequence[t - 1]:
+            n_vals[1] += 1
+        if t - 2 >= 0 and letter_t == sequence[t - 2]:
+            n_vals[2] += 1
+        if t - 3 >= 0 and letter_t == sequence[t - 3]:
+            n_vals[3] += 1
+    # Choose argmax (bias to higher n only if counts higher)
+    return int(np.argmax(n_vals))
+
+
+def compute_nback_levels(df_markers: Any) -> List[int]:
+    """Compute n-back level per block based on sequence_*/targets_* markers.
+
+    We expect markers like:
+        sequence_A,B,C,... (comma separated letters)
+        targets_1,5,9,... (comma separated indices)
+    In the same order as blocks appear.
+
+    Returns list with length = number of sequence markers.
+    On any structural mismatch returns empty list.
+    """
+    try:
+        if df_markers is None or getattr(df_markers, "empty", True):
+            return []
+        # Normalize column name 'marker' usage
+        markers_col = df_markers["marker"].astype(str)
+        seq_rows = markers_col[markers_col.str.startswith("sequence")]
+        trg_rows = markers_col[markers_col.str.startswith("targets")]
+        if len(seq_rows) == 0 or len(trg_rows) == 0:
+            return []
+        if len(seq_rows) != len(trg_rows):
+            LOGGER.debug(
+                "Mismatch sequence(%d) vs targets(%d) markers",
+                len(seq_rows),
+                len(trg_rows),
+            )
+            # proceed with min length
+        n_blocks = min(len(seq_rows), len(trg_rows))
+        n_levels: List[int] = []
+        for i in range(n_blocks):
+            seq_str = seq_rows.iloc[i].removeprefix("sequence_")
+            trg_str = trg_rows.iloc[i].removeprefix("targets_")
+            sequence = [s.strip() for s in seq_str.split(",") if s.strip()]
+            try:
+                targets = [int(x) for x in trg_str.split(",") if x.strip().isdigit()]
+            except Exception:
+                targets = []
+            n_level = _extract_nback_block(sequence, targets, is_first=(i == 0))
+            n_levels.append(n_level)
+        return n_levels
+    except Exception as e:  # pragma: no cover
+        LOGGER.debug("compute_nback_levels failed: %s", e)
+        return []
+
+
+def add_nback_block_annotations(
+    raw: mne.io.BaseRaw, df_markers: Any, nback_levels: List[int]
+) -> int:
+    """Add annotations indicating inferred n-back level at block starts.
+
+    We search for markers ending with '_block_<idx>_start' (e.g. main_block_0_start)
+    and align them in chronological order with nback_levels.
+    Returns number of added annotations.
+    """
+    if not nback_levels or raw.n_times == 0:
+        return 0
+    try:
+        markers_col = df_markers["marker"].astype(str)
+        ts_col = df_markers["timestamp"].astype(float)
+    except Exception:
+        return 0
+    # Candidate block start markers
+    block_mask = markers_col.str.contains(r"_block_\d+_start")
+    starts = markers_col[block_mask]
+    times = ts_col[block_mask]
+    if len(starts) == 0:
+        return 0
+    # Sort by timestamp
+    order_idx = times.sort_values().index
+    starts = starts.loc[order_idx]
+    times = times.loc[order_idx]
+    count = min(len(nback_levels), len(starts))
+    onset_rel = times.iloc[:count].to_numpy() - ts_col.min()
+    desc = [f"nback={n}" for n in nback_levels[:count]]
+    ann = mne.Annotations(onset=onset_rel, duration=[0.0] * count, description=desc)
+    if hasattr(raw, "annotations") and raw.annotations is not None:
+        raw.set_annotations(raw.annotations + ann, emit_warning=False)
+    else:
+        raw.set_annotations(ann, emit_warning=False)
+    return count
 
 
 def list_xdf_streams(xdf_path: Path) -> List[Dict[str, str]]:
@@ -546,8 +808,18 @@ def process_one_file(
     Schritte werden geloggt & können einzeln deaktiviert werden (PyPREP/ICA).
     """
     LOGGER.info("==> START %s", xdf_path.name)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    stem = xdf_path.stem
+    # ------------------------------------------------------------------
+    # Extract subject/session meta → create hierarchical output folder
+    # out_dir / <subject_code> / <session_code>/
+    # This mirrors the input layout and keeps results tidy.
+    # ------------------------------------------------------------------
+    ss_meta = parse_subject_session(xdf_path)
+    subject_code = ss_meta["subject_code"]
+    session_code = ss_meta["session_code"]
+    environment = ss_meta["environment"]
+    hierarchical_out = out_dir / subject_code / session_code
+    hierarchical_out.mkdir(parents=True, exist_ok=True)
+    stem = xdf_path.stem  # keep original stem (already contains sub & ses)
 
     # 1) EEG Stream bestimmen
     stream_id = (
@@ -570,6 +842,38 @@ def process_one_file(
     )
     # 3) Montage & Referenz
     apply_montage_and_reference(raw, montage=montage, average_ref=True)
+    # 3b) Integrate external CSV markers (if present) *before* filters so they survive unchanged.
+    marker_csv = find_marker_csv(xdf_path)
+    added_csv_markers = 0
+    nback_levels: List[int] = []
+    if marker_csv:
+        df_markers = load_marker_csv(marker_csv)
+        if df_markers is not None:
+            added_csv_markers = integrate_csv_markers(raw, df_markers)
+            LOGGER.info(
+                "Integrated %d external CSV markers from %s",
+                added_csv_markers,
+                marker_csv.name,
+            )
+            # Derive n-back difficulty per block and annotate
+            nback_levels = compute_nback_levels(df_markers)
+            added_nback = add_nback_block_annotations(raw, df_markers, nback_levels)
+            if added_nback:
+                LOGGER.info(
+                    "Annotated %d block n-back levels: %s",
+                    added_nback,
+                    nback_levels[:added_nback],
+                )
+            else:
+                LOGGER.info(
+                    "No n-back block annotations added (levels=%s)", nback_levels
+                )
+        else:
+            LOGGER.warning(
+                "Marker CSV present but could not be loaded: %s", marker_csv.name
+            )
+    else:
+        LOGGER.debug("No marker CSV found for %s", xdf_path.name)
     # 4) Optional PyPREP
     if use_pyprep:
         raw = run_pyprep_if_available(raw)
@@ -592,7 +896,10 @@ def process_one_file(
                 raw.info["sfreq"],
             )
         basic_filters(
-            raw, notch=harmonics if harmonics else None, l_freq=l_freq, h_freq=h_freq
+            raw,
+            notch=harmonics if harmonics else None,
+            l_freq=l_freq,
+            h_freq=h_freq,
         )
     # 6) Resample
     if resample_sfreq:
@@ -607,20 +914,52 @@ def process_one_file(
     if raw.n_times == 0:
         LOGGER.warning("Recording empty -> skip save & event extraction")
     else:
-        raw_out = (
-            out_dir / f"{stem}_clean_raw.fif"
-        )  # ends with _raw.fif (MNE convention)
+        # --------------------------------------------
+        # Save cleaned Raw (hierarchical directory)
+        # File name stays close to original for traceability.
+        # --------------------------------------------
+        raw_out = hierarchical_out / f"{stem}_clean_raw.fif"
         raw.save(raw_out, overwrite=True)
         LOGGER.info("Saved cleaned FIF: %s", raw_out)
-        # 9) Events extrahieren & TSV
+        # 9) Events extrahieren & TSV (after potential CSV marker integration)
         events, event_id = extract_events(raw)
         if len(events):
-            save_events_tsv(out_dir, stem, events, event_id)
-            # (Optional) Epochs / Windows – auskommentiert (Performance sparen)
-            # epochs = to_epochs(raw, events, event_id, tmin=0.0, tmax=2.0, baseline=None)
-            # epochs.save(out_dir / f"{stem}_epo.fif", overwrite=True)
+            save_events_tsv(hierarchical_out, stem, events, event_id)
         else:
             LOGGER.info("No events detected -> skip epoch/window export")
+        # 10) Sidecar metadata JSON (for reproducibility & audit)
+        meta_json = hierarchical_out / f"{stem}_meta.json"
+        try:
+            # Use timezone aware UTC timestamp (avoids deprecation of utcnow)
+            pipeline_meta = {
+                "generated": datetime.now(timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z"),
+                "source_xdf": str(xdf_path.resolve()),
+                "subject_code": subject_code,
+                "session_code": session_code,
+                "environment": environment,
+                "n_channels": len(raw.ch_names),
+                "duration_s": round(raw.n_times / raw.info["sfreq"], 3),
+                "sfreq": raw.info["sfreq"],
+                "line_freq": line_freq,
+                "l_freq": l_freq,
+                "h_freq": h_freq,
+                "resampled_sfreq": resample_sfreq,
+                "used_pyprep": use_pyprep,
+                "ran_ica": run_ica,
+                "csv_markers_added": added_csv_markers,
+                "events_extracted": int(len(events)),
+                "nback_levels": nback_levels,
+                "unique_event_labels": int(len(event_id)),
+                "event_id_map": event_id,
+                "mne_version": mne.__version__,
+            }
+            with meta_json.open("w", encoding="utf-8") as f:
+                json.dump(pipeline_meta, f, ensure_ascii=False, indent=2)
+            LOGGER.info("Saved metadata JSON: %s", meta_json.name)
+        except Exception as e:  # pragma: no cover
+            LOGGER.warning("Could not write metadata JSON: %s", e)
     LOGGER.info("<== DONE  %s", xdf_path.name)
 
 
