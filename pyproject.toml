@@ -21,7 +21,8 @@ dependencies = [
     "pytest",
     "braindecode",
     "pyprep",
-    "mnelab"
+    "mnelab",
+    "pandas",
 ]
 
 [project.scripts]
