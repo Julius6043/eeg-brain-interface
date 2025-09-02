@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
+from .plot import PlotConfig
 from .data_loading import DataLoadingConfig, SessionData, load_all_sessions
 from .preprocessing import PreprocessingConfig, preprocess_raw
 
@@ -10,6 +11,7 @@ from .preprocessing import PreprocessingConfig, preprocess_raw
 class PipelineConfig:
     data_loading: DataLoadingConfig
     preprocessing: PreprocessingConfig
+    plot: PlotConfig
     output_dir: Optional[Path] = None
 
 
@@ -38,6 +40,11 @@ class EEGPipeline:
                     self.config.preprocessing
                 )
         print("✓ Preprocessing abgeschlossen")
+
+        if self.config.plot:
+            print(f"\nPlotting step started")
+            raw.compute_psd(fmax=50).plot(picks="data", exclude="bads", amplitude=False)
+            raw.plot(duration=5, n_channels=30)
 
         if self.config.output_dir:
             print("\nStep 3: Save processed data")
