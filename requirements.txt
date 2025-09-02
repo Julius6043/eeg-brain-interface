@@ -11,4 +11,3 @@ seaborn
 pyxdf
 pytest
 psychopy
-psylsl

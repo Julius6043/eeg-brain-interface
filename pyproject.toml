@@ -2,7 +2,7 @@
 name = "eeg-pipeline"
 version = "0.1.0"
 authors = [
-    {name = "Rami Wahed", email = "52122856+ramiwahed@users.noreply.github.com"}
+    { name = "Rami Wahed", email = "52122856+ramiwahed@users.noreply.github.com" }
 ]
 description = "Brain pattern recognition"
 requires-python = ">=3.11"
@@ -18,7 +18,8 @@ dependencies = [
     "pyriemann",
     "seaborn",
     "pyxdf",
-    "pytest"
+    "pytest",
+    "psychopy"
 ]
 
 [project.scripts]
