@@ -10,3 +10,5 @@ pyriemann
 seaborn
 pyxdf
 pytest
+psychopy
+psylsl
