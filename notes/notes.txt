@@ -1,0 +1,57 @@
+Train-Test Split
+
+- random split
+- 60 / 20 / 20 split
+- CrossValidation only at the end
+
+- 8 classes instead of 4
+- multi label
+- noisy vs not noisy
+
+- Training data in the lab condition vs noisy condition?
+
+Step 1: Define research question.
+
+Datastructures:
+- id (participant), session #, time, label (condition=quiet, task)
+- number of spikes, max frequency, min frequency, 
+- file for each participant
+- one big datatable (dataframe)
+
+Another approach:
+
+trial id
+participant id
+noise in one-hot or ordinal? => 
+
+Deep learning => 8 channels
+Feature based approach => summarize the channels
+
+---------
+
+Felix 03.09:
+
+Welch's Transform
+- More robust against noise
+
+- x-achse frequency bins, y energy in frequency band (per channel)
+- some way of compressing the frequency resolution
+- traditional frequency band -> 8x3 values for each electrode (24 values for each frequency band) => first feature vector
+- every two Hz should be each feature
+- other statistical moments (paper contains some features)
+- session-specific vs person-specific
+- Research question dependent: 
+    - as a starting point: data on one session 
+    - evaluate it on another session (same person)
+    - 4-class task. 3-class problem 
+    - focus on class balance
+
+---------
+
+- 2d data from the session given (2d-matrix)
+- once you window that it becomes a 3d datastructure (number of windows x number of channels x number of samples)
+- windows need to be of identical size (2 second ~ 500 data points depending on sasmpling rate)
+- feature extraction: becomes a 2d datastructure for each window
+- for deep learning approach: use the 3d datastructure (raw data)
+    - it will learn the temporal dynamics within the window
+- braindecode can do some things on mne datastructure
