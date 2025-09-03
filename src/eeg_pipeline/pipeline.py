@@ -43,8 +43,7 @@ class EEGPipeline:
 
         if self.config.plot:
             print(f"\nPlotting step started")
-            raw.compute_psd(fmax=50).plot(picks="data", exclude="bads", amplitude=False)
-            raw.plot(duration=5, n_channels=30)
+            pass
 
         if self.config.output_dir:
             print("\nStep 3: Save processed data")
@@ -61,13 +60,21 @@ class EEGPipeline:
             session_dir = self.config.output_dir / session.participant_name
             session_dir.mkdir(exist_ok=True)
 
+            print(f"  Speichere {session.participant_name}:")
+
             if session.indoor_session:
-                indoor_path = session_dir / "indoor_processed.fif"
+                indoor_path = session_dir / "indoor_processed_raw.fif"
                 session.indoor_session.save(str(indoor_path), overwrite=True)
+                print(f"    ✓ Indoor-Session gespeichert")
+            else:
+                print(f"    ⚠ Keine Indoor-Session verfügbar")
 
             if session.outdoor_session:
-                outdoor_path = session_dir / "outdoor_processed.fif"
+                outdoor_path = session_dir / "outdoor_processed_raw.fif"
                 session.outdoor_session.save(str(outdoor_path), overwrite=True)
+                print(f"    ✓ Outdoor-Session gespeichert")
+            else:
+                print(f"    ⚠ Keine Outdoor-Session verfügbar")
 
         print(f"✓ Daten gespeichert in {self.config.output_dir}")
 
@@ -78,6 +85,7 @@ def create_default_config() -> PipelineConfig:
             max_channels=8,
             montage="standard_1020"
         ),
+        plot=None,
         preprocessing=PreprocessingConfig(
             l_freq=1.0,
             h_freq=40.0,
