@@ -23,12 +23,11 @@ dependencies = [
     "braindecode",
     "pyprep",
     "mnelab",
-    "pandas",
 ]
 
 [project.scripts]
 eeg-pipeline = "eeg_pipeline.main:main"
-
+eeg-debug = "eeg_pipeline.debug.analyzer:main"
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
