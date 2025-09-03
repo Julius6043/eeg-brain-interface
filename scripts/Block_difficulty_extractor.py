@@ -29,8 +29,14 @@ def calculate_nvals(df):
     if not isinstance(df, pd.DataFrame):
         raise TypeError(f"Expected a pandas.DataFrame, but got: {type(df).__name__}")
 
+    df["prev_marker"] = df["marker"].shift(1)
+    df["prev_prev_marker"] = df["marker"].shift(2)
+
     # Sequences
-    mask_seq = df["marker"].str.startswith("sequence")
+    mask_seq = df["marker"].str.startswith("sequence") & df[
+        "prev_marker"
+    ].str.startswith("main_block")
+
     seq_df = (
         df.loc[mask_seq, "marker"]
         .str.removeprefix("sequence_")
@@ -41,7 +47,10 @@ def calculate_nvals(df):
     # print(seq_df)
 
     # Targets
-    mask_trg = df["marker"].str.startswith("targets")
+    mask_trg = df["marker"].str.startswith("target") & df[
+        "prev_prev_marker"
+    ].str.startswith("main_block")
+
     trg_df = (
         df.loc[mask_trg, "marker"]
         .str.removeprefix("targets_")
@@ -50,7 +59,6 @@ def calculate_nvals(df):
         .to_frame(name="targets")
         .reset_index(drop=True)
     )
-    # print(trg_df)
 
     n_vals = []
     for idx in range(len(seq_df)):
