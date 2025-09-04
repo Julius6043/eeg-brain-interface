@@ -102,17 +102,22 @@ class EEGPipeline:
                 )
                 print(f"  ✓ Outdoor annotations added for {session.participant_name}")
         print("✓ Marker-Annotation abgeschlossen")
-        """
+
         # 4. Epoching
         if self.config.epoching:
             print("\nStep 4: Epoching")
             for session in self.sessions:
                 if session.indoor_session and session.indoor_session.annotations:
-                    session.indoor_session = epoch_raw(session.indoor_session)
+                    events_in, event_id_in = mne.events_from_annotations(
+                        session.indoor_session
+                    )
+
                 if session.outdoor_session and session.outdoor_session.annotations:
-                    session.outdoor_session = epoch_raw(session.outdoor_session)
+                    events_out, event_id_out = mne.events_from_annotations(
+                        session.outdoor_session
+                    )
         print("✓ Epoching abgeschlossen")
-        """
+
         # 5. Plot (Platzhalter) – könnte später differenziert werden (PSD, ERP, …)
         if self.config.plot:
             print("\nPlotting step started (derzeit Platzhalter)")

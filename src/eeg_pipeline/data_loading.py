@@ -255,9 +255,6 @@ def load_session_data(
         )
         markers.insert(0, "Timestamp", timestamps)
 
-    if markers is not None:
-        print(markers)
-
     return raw, markers
 
 
