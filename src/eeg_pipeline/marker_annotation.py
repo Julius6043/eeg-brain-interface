@@ -234,7 +234,7 @@ def create_annotations_from_blocks_and_baseline(
     block_info: List[Tuple[float, float, int, int]],
     baseline_info: List[Tuple[float, float, str]],
     eeg_start_time: float,
-    sampling_rate: float,
+    sampling_rate: float = None,
 ) -> mne.Annotations:
     """Erstellt MNE Annotations aus Block- und Baseline-Informationen.
 
@@ -246,8 +246,8 @@ def create_annotations_from_blocks_and_baseline(
         Liste von (start_time, end_time, description) Tupeln für Baselines
     eeg_start_time : float
         Start-Zeitstempel der EEG-Aufnahme (für relative Zeitberechnung)
-    sampling_rate : float
-        Sampling-Rate der EEG-Daten in Hz
+    sampling_rate : float, optional
+        Sampling-Rate der EEG-Daten in Hz (nicht mehr verwendet)
 
     Rückgabe
     --------
@@ -267,12 +267,8 @@ def create_annotations_from_blocks_and_baseline(
         onset = start_time - eeg_start_time
         duration = end_time - start_time
 
-        # Berechne Samples
-        onset_samples = int(onset * sampling_rate)
-        duration_samples = int(duration * sampling_rate)
-
-        # Erweiterte Beschreibung mit Zeit- und Sample-Informationen
-        desc = f"{description}_onset_{onset:.1f}s_{onset_samples}smp_dur_{duration:.1f}s_{duration_samples}smp"
+        # Einfache Beschreibung nur mit Zeitinformationen
+        desc = f"{description}_onset_{onset:.1f}s_dur_{duration:.1f}s"
 
         onsets.append(onset)
         durations.append(duration)
@@ -284,12 +280,8 @@ def create_annotations_from_blocks_and_baseline(
         onset = start_time - eeg_start_time
         duration = end_time - start_time
 
-        # Berechne Samples
-        onset_samples = int(onset * sampling_rate)
-        duration_samples = int(duration * sampling_rate)
-
-        # Erweiterte Beschreibung mit Zeit- und Sample-Informationen
-        desc = f"block_{block_num:02d}_nback_{n_back}_onset_{onset:.1f}s_{onset_samples}smp_dur_{duration:.1f}s_{duration_samples}smp"
+        # Einfache Beschreibung nur mit Zeitinformationen
+        desc = f"block_{block_num:02d}_nback_{n_back}_onset_{onset:.1f}s_dur_{duration:.1f}s"
 
         onsets.append(onset)
         durations.append(duration)
@@ -333,12 +325,9 @@ def annotate_raw_with_markers(raw: Raw, markers_df: Optional[pd.DataFrame]) -> R
     # (Annahme: Marker und EEG wurden synchron gestartet)
     eeg_start_time = markers_df["Timestamp"].min()
 
-    # Hole Sampling-Rate aus Raw-Objekt
-    sampling_rate = raw.info["sfreq"]
-
-    # Erstelle Annotationen
+    # Erstelle Annotationen (ohne Sampling-Rate)
     annotations = create_annotations_from_blocks_and_baseline(
-        block_info, baseline_info, eeg_start_time, sampling_rate
+        block_info, baseline_info, eeg_start_time
     )
 
     # Füge zu Raw hinzu

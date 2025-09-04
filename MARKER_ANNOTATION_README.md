@@ -26,21 +26,21 @@ Die Pipeline wurde um einen neuen Schritt erweitert:
 
 ### 3. Annotation Format
 
-Die Annotationen folgen einem erweiterten Schema mit Zeit- und Sample-Informationen:
+Die Annotationen folgen einem strukturierten Schema nur mit Zeitinformationen in Sekunden:
 
 **Baseline-Annotationen**:
-`baseline_{nummer}_onset_{onset_sekunden}s_{onset_samples}smp_dur_{dauer_sekunden}s_{dauer_samples}smp`
+`baseline_{nummer}_onset_{onset_sekunden}s_dur_{dauer_sekunden}s`
 
 **Block-Annotationen**:
-`block_{nummer:02d}_nback_{level}_onset_{onset_sekunden}s_{onset_samples}smp_dur_{dauer_sekunden}s_{dauer_samples}smp`
+`block_{nummer:02d}_nback_{level}_onset_{onset_sekunden}s_dur_{dauer_sekunden}s`
 
 Beispiele:
-- `baseline_1_onset_0.0s_0smp_dur_121.0s_30243smp` - Baseline 1, Start bei 0s (0 samples), 121s Dauer (30243 samples)
-- `block_00_nback_0_onset_129.5s_32363smp_dur_310.7s_77682smp` - Block 0, n-back Level 0, Start bei 129.5s (32363 samples), 310.7s Dauer (77682 samples)
-- `block_01_nback_1_onset_440.2s_110046smp_dur_218.2s_54551smp` - Block 1, n-back Level 1, Start bei 440.2s (110046 samples), 218.2s Dauer (54551 samples)
+- `baseline_1_onset_0.0s_dur_121.0s` - Baseline 1, Start bei 0s, 121s Dauer
+- `block_00_nback_0_onset_129.5s_dur_310.7s` - Block 0, n-back Level 0, Start bei 129.5s, 310.7s Dauer
+- `block_01_nback_1_onset_440.2s_dur_218.2s` - Block 1, n-back Level 1, Start bei 440.2s, 218.2s Dauer
 
 Dieses Format ermöglicht:
-- **Präzise Zeitangaben** in Sekunden und Samples
+- **Präzise Zeitangaben** in Sekunden
 - **Einfache Extraktion** von Timing-Informationen aus der Beschreibung
 - **Kompatibilität** mit MNE-Annotations
 
@@ -190,14 +190,14 @@ Die n-back Level werden durch Analyse der Sequenzen und Targets bestimmt:
 
 ### Sampling Rate Konvention
 
-Die ursprüngliche Annahme war 250 Hz (250 samples = 1 Sekunde), aber die Pipeline arbeitet mit den tatsächlichen Sampling-Raten aus den XDF-Dateien.
+Die Pipeline arbeitet direkt mit den tatsächlichen Sampling-Raten aus den XDF-Dateien und verwendet Zeitstempel in Sekunden für die Annotationen.
 
 ## Vorteile
 
 1. **Automatisierung**: Keine manuelle Block-Identifikation nötig
 2. **Präzision**: Exakte Zeit-Grenzen aus Marker-Stream
 3. **Baseline-Integration**: Automatische Erkennung von Ruhephasen
-4. **Erweiterte Zeitinformationen**: Sowohl Sekunden als auch Sample-Angaben
+4. **Einfaches Format**: Klare Zeitangaben in Sekunden
 5. **Reproduzierbarkeit**: Identische Annotation bei jedem Pipeline-Lauf
 6. **MNE-Kompatibilität**: Standard MNE Annotations für einfache Weiterverarbeitung
 7. **Flexibilität**: Einfache Extraktion spezifischer Blöcke und Baselines für Analyse
@@ -230,7 +230,7 @@ low_load_blocks = extract_blocks_by_nback(raw, 0)   # n-back 0
 for block in high_load_blocks:
     # Timing-Informationen verfügbar
     desc = block.info['description']
-    # Beispiel: block_04_nback_3_onset_1091.2s_272809smp_dur_216.1s_54014smp
+    # Beispiel: block_04_nback_3_onset_1091.2s_dur_216.1s
     
     psd, freqs = mne.time_frequency.psd_welch(block)
     # Alpha/Beta Power, Connectivity, etc.
