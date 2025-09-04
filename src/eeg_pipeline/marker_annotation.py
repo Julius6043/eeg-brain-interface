@@ -323,11 +323,10 @@ def annotate_raw_with_markers(raw: Raw, markers_df: Optional[pd.DataFrame]) -> R
 
     # Schätze EEG-Start-Zeit aus erstem Marker-Timestamp
     # EEG startet vor dem ersten Marker
-    eeg_start_time = raw.times[0]
 
     # Erstelle Annotationen (ohne Sampling-Rate)
     annotations = create_annotations_from_blocks_and_baseline(
-        block_info, baseline_info, eeg_start_time
+        block_info, baseline_info, 0.0
     )
 
     # Füge zu Raw hinzu
