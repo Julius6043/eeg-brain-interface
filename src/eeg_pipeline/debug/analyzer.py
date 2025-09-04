@@ -10,7 +10,8 @@ import traceback
 from typing import Dict, List, Optional, Tuple
 import pandas as pd
 
-from ..data_loading import DataLoadingConfig, load_xdf_safe, pick_streams, eeg_stream_to_raw
+from eeg_pipeline.data_loading import DataLoadingConfig, load_xdf_safe, pick_streams, eeg_stream_to_raw
+
 
 class XDFAnalyzer:
     def __init__(self, data_dir: Path):
@@ -50,7 +51,7 @@ class XDFAnalyzer:
 
         try:
             # Dateigröße
-            result['file_size_mb'] = round(xdf_path.stat().st_size / (1024*1024), 2)
+            result['file_size_mb'] = round(xdf_path.stat().st_size / (1024 * 1024), 2)
 
             # XDF laden
             streams, header = load_xdf_safe(xdf_path)
@@ -196,8 +197,8 @@ class XDFAnalyzer:
 
 📈 ÜBERSICHT:
   • Gesamte XDF-Dateien: {total_files}
-  • Erfolgreich geladen: {successful_loads} ({successful_loads/total_files*100:.1f}%)
-  • Raw-Objekte erstellt: {successful_raw} ({successful_raw/total_files*100:.1f}%)
+  • Erfolgreich geladen: {successful_loads} ({successful_loads / total_files * 100:.1f}%)
+  • Raw-Objekte erstellt: {successful_raw} ({successful_raw / total_files * 100:.1f}%)
   • Dateien mit Fehlern: {files_with_errors}
   • Dateien mit Warnungen: {files_with_warnings}
 
@@ -232,7 +233,7 @@ class XDFAnalyzer:
 
             report += f"\n📊 DATENQUALITÄT:\n"
             report += f"  • Durchschnittliche Session-Dauer: {avg_duration:.1f} Sekunden\n"
-            report += f"  • Gesamte Aufnahmezeit: {total_duration:.1f} Sekunden ({total_duration/60:.1f} Minuten)\n"
+            report += f"  • Gesamte Aufnahmezeit: {total_duration:.1f} Sekunden ({total_duration / 60:.1f} Minuten)\n"
 
         return report
 
@@ -250,27 +251,54 @@ class XDFAnalyzer:
         df.to_csv(output_path, index=False, encoding='utf-8')
         print(f"📄 Detaillierte Ergebnisse gespeichert: {output_path}")
 
+
 def main():
     """Hauptfunktion für das Kommandozeilen-Tool"""
     print("🧠 EEG XDF-Dateien Debug-Analyzer")
     print("=" * 50)
 
-    # Arbeitsverzeichnis ermitteln (relativ zum aktuellen Verzeichnis)
+    # Projekt-Root finden - suche nach pyproject.toml oder README.md
     current_dir = Path.cwd()
-    data_dir = current_dir / "data"
-    results_dir = current_dir / "results"
+    project_root = None
 
-    # Falls wir im src-Verzeichnis sind, gehe eine Ebene höher
-    if current_dir.name == "src" or "src" in current_dir.parts:
-        data_dir = current_dir.parent / "data"
-        results_dir = current_dir.parent / "results"
+    # Versuche das Projekt-Root zu finden, indem wir nach oben traversieren
+    search_dir = current_dir
+    max_levels = 10  # Verhindere Endlosschleife
+
+    for _ in range(max_levels):
+        # Prüfe auf typische Projekt-Root Indikatoren
+        if (search_dir / "pyproject.toml").exists() or \
+           (search_dir / "README.md").exists() and (search_dir / "data").exists():
+            project_root = search_dir
+            break
+
+        # Wenn wir bereits im Root-Verzeichnis sind, stoppe
+        if search_dir.parent == search_dir:
+            break
+            
+        search_dir = search_dir.parent
+
+    # Fallback: Verwende aktuelles Verzeichnis wenn kein Projekt-Root gefunden
+    if project_root is None:
+        print(f"⚠️  Projekt-Root nicht automatisch gefunden, verwende: {current_dir}")
+        project_root = current_dir
+    else:
+        print(f"✅ Projekt-Root gefunden: {project_root}")
+
+    data_dir = project_root / "data"
+    results_dir = project_root / "results"
 
     results_dir.mkdir(exist_ok=True)
 
     if not data_dir.exists():
         print(f"❌ Datenverzeichnis nicht gefunden: {data_dir}")
         print(f"💡 Aktuelles Verzeichnis: {current_dir}")
-        print(f"💡 Stellen Sie sicher, dass Sie das Tool im Projekt-Root ausführen")
+        print(f"💡 Projekt-Root: {project_root}")
+        print(f"💡 Verzeichnisstruktur prüfen:")
+        print(f"    - {data_dir} (erwartet)")
+        if project_root.exists():
+            subdirs = [d.name for d in project_root.iterdir() if d.is_dir()]
+            print(f"    - Verfügbare Verzeichnisse: {subdirs}")
         return 1
 
     # Analyzer starten
@@ -300,6 +328,7 @@ def main():
         print(f"❌ Unerwarteter Fehler: {e}")
         traceback.print_exc()
         return 1
+
 
 if __name__ == "__main__":
     sys.exit(main())

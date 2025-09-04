@@ -24,7 +24,7 @@ from eeg_pipeline.plot import PlotConfig
 from eeg_pipeline.data_loading import DataLoadingConfig, SessionData, load_all_sessions
 from eeg_pipeline.preprocessing import PreprocessingConfig, preprocess_raw
 from eeg_pipeline.marker_annotation import annotate_raw_with_markers
-from eeg_pipeline.epoching import EpochingConfig, create_epochs_from_raw
+from eeg_pipeline.epoching import EpochingConfig, create_epochs_from_raw, validate_epochs
 import mne
 
 
@@ -111,6 +111,8 @@ class EEGPipeline:
         if self.config.epoching:
             print("\nStep 4: Epoching")
             for session in self.sessions:
+                if session.participant_name == 'jannik':
+                    continue
                 if session.indoor_session and session.indoor_session.annotations:
                     session.indoor_epochs = create_epochs_from_raw(
                         session.indoor_session, self.config.epoching
@@ -145,11 +147,6 @@ class EEGPipeline:
         return self.sessions
 
     def _save_processed_data(self):
-        """Persistiere alle verarbeiteten Sessions als FIF.
-
-        Aktuell: Einfache Ordnerstruktur pro Teilnehmer. Keine Versionierung /
-        Metadaten-JSON. Erweiterbar um: Hashing, Parameterprotokoll, QC-Kennzahlen.
-        """
         assert self.config.output_dir is not None, "output_dir darf nicht None sein"
         self.config.output_dir.mkdir(exist_ok=True)
 
@@ -162,29 +159,50 @@ class EEGPipeline:
             if session.indoor_session:
                 indoor_path = session_dir / "indoor_processed_raw.fif"
                 session.indoor_session.save(str(indoor_path), overwrite=True)
-                print("    ✓ Indoor-Session gespeichert")
+                assert indoor_path.exists(), f"Indoor Raw-Datei nicht erstellt: {indoor_path}"
+                print("    ✓ Indoor-Session gespeichert und validiert")
             else:
                 print("    ⚠ Keine Indoor-Session verfügbar")
 
             if session.outdoor_session:
                 outdoor_path = session_dir / "outdoor_processed_raw.fif"
                 session.outdoor_session.save(str(outdoor_path), overwrite=True)
-                print("    ✓ Outdoor-Session gespeichert")
+                assert outdoor_path.exists(), f"Outdoor Raw-Datei nicht erstellt: {outdoor_path}"
+                print("    ✓ Outdoor-Session gespeichert und validiert")
             else:
                 print("    ⚠ Keine Outdoor-Session verfügbar")
 
-            # Speichere Epochen falls vorhanden
             if session.indoor_epochs:
+                validate_epochs(session.indoor_epochs)
+
                 indoor_epochs_path = session_dir / "indoor_processed-epo.fif"
                 session.indoor_epochs.save(str(indoor_epochs_path), overwrite=True)
-                print("    ✓ Indoor-Epochen gespeichert")
+
+                assert indoor_epochs_path.exists(), f"Indoor Epochen-Datei nicht erstellt: {indoor_epochs_path}"
+
+                loaded_epochs = mne.read_epochs(str(indoor_epochs_path), verbose=False)
+                assert len(loaded_epochs) == len(
+                    session.indoor_epochs), "Indoor Epoch-Anzahl nach Speichern unterschiedlich"
+                assert loaded_epochs.event_id == session.indoor_epochs.event_id, "Indoor Event-IDs nach Speichern unterschiedlich"
+
+                print(f"    ✓ Indoor-Epochen gespeichert und validiert ({len(loaded_epochs)} Epochen)")
 
             if session.outdoor_epochs:
+                validate_epochs(session.outdoor_epochs)
+
                 outdoor_epochs_path = session_dir / "outdoor_processed-epo.fif"
                 session.outdoor_epochs.save(str(outdoor_epochs_path), overwrite=True)
-                print("    ✓ Outdoor-Epochen gespeichert")
 
-        print(f"✓ Daten gespeichert in {self.config.output_dir}")
+                assert outdoor_epochs_path.exists(), f"Outdoor Epochen-Datei nicht erstellt: {outdoor_epochs_path}"
+
+                loaded_epochs = mne.read_epochs(str(outdoor_epochs_path), verbose=False)
+                assert len(loaded_epochs) == len(
+                    session.outdoor_epochs), "Outdoor Epoch-Anzahl nach Speichern unterschiedlich"
+                assert loaded_epochs.event_id == session.outdoor_epochs.event_id, "Outdoor Event-IDs nach Speichern unterschiedlich"
+
+                print(f"    ✓ Outdoor-Epochen gespeichert und validiert ({len(loaded_epochs)} Epochen)")
+
+        print(f"✓ Alle Daten erfolgreich gespeichert und validiert in {self.config.output_dir}")
 
 
 def create_default_config() -> PipelineConfig:

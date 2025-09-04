@@ -268,7 +268,7 @@ def create_annotations_from_blocks_and_baseline(
         duration = end_time - start_time
 
         # Einfache Beschreibung nur mit Zeitinformationen
-        desc = f"{description}_onset_{onset:.1f}s_dur_{duration:.1f}s"
+        desc = f"baseline"
 
         onsets.append(onset)
         durations.append(duration)
@@ -281,7 +281,7 @@ def create_annotations_from_blocks_and_baseline(
         duration = end_time - start_time
 
         # Einfache Beschreibung nur mit Zeitinformationen
-        desc = f"block_{block_num:02d}_nback_{n_back}_onset_{onset:.1f}s_dur_{duration:.1f}s"
+        desc = f"{n_back}-back"
 
         onsets.append(onset)
         durations.append(duration)

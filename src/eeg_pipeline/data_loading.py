@@ -187,7 +187,7 @@ def eeg_stream_to_raw(eeg_stream: dict, config: DataLoadingConfig) -> mne.io.Raw
 
 
 def get_session_paths(
-    experiment_sessions: List[Path],
+        experiment_sessions: List[Path],
 ) -> Tuple[Optional[Path], Optional[Path]]:
     """Teile gefundene XDF-Dateien den erwarteten Session-Codes zu.
 
@@ -212,8 +212,8 @@ def get_session_paths(
 
 
 def load_session_data(
-    session_path: Optional[Path],
-    config: DataLoadingConfig,
+        session_path: Optional[Path],
+        config: DataLoadingConfig,
 ) -> Tuple[Optional[mne.io.Raw], Optional[pd.DataFrame]]:
     """Lade eine einzelne Session (EEG + Marker-CSV).
 
@@ -260,14 +260,14 @@ def load_session_data(
         # Justiere Marker-Zeitstempel relativ zum EEG-Start (Annahme: EEG startet vor erstem Marker)
         timestamps = timestamps - first_eeg_timestamp
         markers = pd.DataFrame(
-            marker_data, columns=[f"Marker{i+1}" for i in range(marker_data.shape[1])]
+            marker_data, columns=[f"Marker{i + 1}" for i in range(marker_data.shape[1])]
         )
         markers.insert(0, "Timestamp", timestamps)
     return raw, markers
 
 
 def load_single_session(
-    experiment_dir: Path, config: DataLoadingConfig = None
+        experiment_dir: Path, config: DataLoadingConfig = None
 ) -> SessionData:
     """Lade (bis zu) zwei Sessions für einen Teilnehmerordner.
 
@@ -281,13 +281,22 @@ def load_single_session(
     participant_name = experiment_dir.name.split("_")[-1]
     experiment_sessions = list(experiment_dir.rglob("*.xdf"))
     assert (
-        len(experiment_sessions) <= 2
+            len(experiment_sessions) <= 2
     ), "Mehr als zwei Sessions gefunden – Anpassung nötig"
 
     indoor_path, outdoor_path = get_session_paths(experiment_sessions)
 
-    indoor_session, indoor_markers = load_session_data(indoor_path, config)
-    outdoor_session, outdoor_markers = load_session_data(outdoor_path, config)
+    indoor_session, indoor_markers = None, None
+    try:
+        indoor_session, indoor_markers = load_session_data(indoor_path, config)
+    except Exception as e:
+        print(f"[WARN] Fehler beim Laden der Indoor-Session für {participant_name}: {e}")
+
+    outdoor_session, outdoor_markers = None, None
+    try:
+        outdoor_session, outdoor_markers = load_session_data(outdoor_path, config)
+    except Exception as e:
+        print(f"[WARN] Fehler beim Laden der Outdoor-Session für {participant_name}: {e}")
 
     return SessionData(
         participant_name=participant_name,
@@ -299,7 +308,7 @@ def load_single_session(
 
 
 def load_all_sessions(
-    data_dir: Path, config: DataLoadingConfig = None
+        data_dir: Path, config: DataLoadingConfig = None
 ) -> List[SessionData]:
     """Lade alle Teilnehmerverzeichnisse innerhalb eines Wurzelordners.
 
