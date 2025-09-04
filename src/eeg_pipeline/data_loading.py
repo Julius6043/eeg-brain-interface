@@ -244,6 +244,7 @@ def load_session_data(
     raw = eeg_stream_to_raw(eeg_stream, config)
 
     # wandel marker_stream in DataFrame um (falls vorhanden)
+    markers = None
     if marker_stream and "time_series" in marker_stream:
         marker_data = np.array(marker_stream["time_series"])
         if marker_data.ndim == 1:
@@ -254,7 +255,8 @@ def load_session_data(
         )
         markers.insert(0, "Timestamp", timestamps)
 
-    print(markers)
+    if markers is not None:
+        print(markers)
 
     return raw, markers
 

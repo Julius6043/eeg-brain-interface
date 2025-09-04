@@ -23,6 +23,8 @@ from typing import List, Optional
 from eeg_pipeline.plot import PlotConfig
 from eeg_pipeline.data_loading import DataLoadingConfig, SessionData, load_all_sessions
 from eeg_pipeline.preprocessing import PreprocessingConfig, preprocess_raw
+from eeg_pipeline.marker_annotation import annotate_raw_with_markers
+import mne
 
 
 @dataclass
@@ -86,15 +88,40 @@ class EEGPipeline:
                 )
         print("✓ Preprocessing abgeschlossen")
 
-        # 3. Plot (Platzhalter) – könnte später differenziert werden (PSD, ERP, …)
+        # 3. Marker-Annotation
+        print("\nStep 3: Adding marker-based annotations")
+        for session in self.sessions:
+            if session.indoor_session and session.indoor_markers is not None:
+                session.indoor_session = annotate_raw_with_markers(
+                    session.indoor_session, session.indoor_markers
+                )
+                print(f"  ✓ Indoor annotations added for {session.participant_name}")
+            if session.outdoor_session and session.outdoor_markers is not None:
+                session.outdoor_session = annotate_raw_with_markers(
+                    session.outdoor_session, session.outdoor_markers
+                )
+                print(f"  ✓ Outdoor annotations added for {session.participant_name}")
+        print("✓ Marker-Annotation abgeschlossen")
+
+        # 4. Epoching
+        if self.config.epoching:
+            print("\nStep 4: Epoching")
+            for session in self.sessions:
+                if session.indoor_session and session.indoor_session.annotations:
+                    session.indoor_session = epoch_raw(session.indoor_session)
+                if session.outdoor_session and session.outdoor_session.annotations:
+                    session.outdoor_session = epoch_raw(session.outdoor_session)
+        print("✓ Epoching abgeschlossen")
+
+        # 5. Plot (Platzhalter) – könnte später differenziert werden (PSD, ERP, …)
         if self.config.plot:
             print("\nPlotting step started (derzeit Platzhalter)")
             # TODO: Implement plotting utilities.
             pass
 
-        # 4. Persistierung
+        # 6. Persistierung
         if self.config.output_dir:
-            print("\nStep 3: Save processed data")
+            print("\nStep 4: Save processed data")
             self._save_processed_data()
 
         print("\nPipeline finished!")
