@@ -194,7 +194,7 @@ def create_default_config() -> PipelineConfig:
     """
     return PipelineConfig(
         data_loading=DataLoadingConfig(max_channels=8, montage="standard_1020"),
-        preprocessing=PreprocessingConfig(l_freq=1.0, h_freq=40.0, notch_freq=50.0),
+        preprocessing=PreprocessingConfig(l_freq=4.0, h_freq=40.0, notch_freq=50.0),
         epoching=EpochingConfig(),  # Aktiviere Epoching mit Standard-Parametern
         plot=None,
     )
