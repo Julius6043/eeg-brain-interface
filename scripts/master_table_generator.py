@@ -1,14 +1,15 @@
 """
-
-Run this code using following command in the terminal: python master_table_generator.py --eeg_dir ../results/processed/Jannik --marker_dir ../results/processed/Jannik --subject_name Jannik --output_csv Jannik_master.csv --debug
-
-
 This script processes EEG experiment data to build a master table containing spectral
 features for each subject/session/block/segment combination.  It expects that
 every subject participates in two sessions: ``session 1`` recorded under silent
 conditions and ``session 2`` recorded under noisy conditions.  For each session
 there is a corresponding ``*.fif`` file with the raw EEG data and a marker
 ``*.csv`` file containing event markers.
+
+
+python master_table_generator.py --eeg_dir ../results/processed/Jannik --marker_dir ../results/processed/Jannik --subject_name Jannik --output_csv ../results/processed/Jannik_master.csv --debug
+
+
 
 The workflow implemented here performs the following steps:
 
@@ -605,7 +606,7 @@ if __name__ == '__main__':
         '--marker_dir', default='.', help='Directory containing marker CSV files (default: current directory)'
     )
     parser.add_argument(
-        '--output_csv', default='master_table.csv', help='Path to write the resulting master table CSV (default: master_table.csv in current directory)'
+        '--output_csv', default=None, help='Optional path to write the resulting master table CSV.  If not provided, the file will be saved into the directory containing the EEG data.'
     )
     parser.add_argument(
         '--subject_name', default=None, help='Optional override for the subject identifier (e.g. Jannik)'
@@ -621,4 +622,13 @@ if __name__ == '__main__':
     # Attach debug flag for process_session
     if args.debug:
         setattr(process_session, 'debug', True)
-    main(args.eeg_dir, args.marker_dir, args.output_csv)
+    # Determine output path.  If none provided, save into the EEG directory
+    # using a default filename.  This ensures the master table resides
+    # alongside the raw EEG data by default.
+    if args.output_csv is None:
+        default_filename = 'master_table.csv'
+        output_path = os.path.join(args.eeg_dir, default_filename)
+    else:
+        output_path = args.output_csv
+
+    main(args.eeg_dir, args.marker_dir, output_path)
