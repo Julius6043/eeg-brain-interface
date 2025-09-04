@@ -243,13 +243,18 @@ def load_session_data(
 
     raw = eeg_stream_to_raw(eeg_stream, config)
 
-    # Marker CSV Heuristik (erstes *.csv zwei Ebenen höher) – TODO: verfeinern.
-    marker_csv = list(session_path.parent.parent.glob("*.csv"))
-    markers = pd.read_csv(marker_csv[0]) if marker_csv else None
+    # wandel marker_stream in DataFrame um (falls vorhanden)
+    if marker_stream and "time_series" in marker_stream:
+        marker_data = np.array(marker_stream["time_series"])
+        if marker_data.ndim == 1:
+            marker_data = marker_data[:, np.newaxis]
+        timestamps = np.array(marker_stream["time_stamps"])
+        markers = pd.DataFrame(
+            marker_data, columns=[f"Marker{i+1}" for i in range(marker_data.shape[1])]
+        )
+        markers.insert(0, "Timestamp", timestamps)
 
-    # Optional: Marker aus marker_stream in DataFrame konvertieren (derzeit nicht genutzt)
-    # if marker_stream and markers is None:
-    #     pass
+    print(markers)
 
     return raw, markers
 
