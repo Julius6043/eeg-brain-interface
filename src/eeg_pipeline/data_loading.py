@@ -256,13 +256,13 @@ def load_session_data(
         marker_data = np.array(marker_stream["time_series"])
         if marker_data.ndim == 1:
             marker_data = marker_data[:, np.newaxis]
-        markers = pd.DataFrame(marker_data, columns=["Description"])
-        if "time_stamps" in marker_stream:
-            markers["Timestamp"] = marker_stream["time_stamps"]
-            # Justiere Marker-Zeitstempel relativ zum EEG-Start
-            markers["Timestamp"] -= first_eeg_timestamp
-        else:
-            markers["Timestamp"] = np.nan
+        timestamps = np.array(marker_stream["time_stamps"])
+        # Justiere Marker-Zeitstempel relativ zum EEG-Start (Annahme: EEG startet vor erstem Marker)
+        timestamps = timestamps - first_eeg_timestamp
+        markers = pd.DataFrame(
+            marker_data, columns=[f"Marker{i+1}" for i in range(marker_data.shape[1])]
+        )
+        markers.insert(0, "Timestamp", timestamps)
     return raw, markers
 
 
