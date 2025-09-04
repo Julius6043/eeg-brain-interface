@@ -20,9 +20,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from eeg_pipeline.plot import PlotConfig
-from eeg_pipeline.data_loading import DataLoadingConfig, SessionData, load_all_sessions
-from eeg_pipeline.preprocessing import PreprocessingConfig, preprocess_raw
+from .plot import PlotConfig
+from .data_loading import DataLoadingConfig, SessionData, load_all_sessions
+from .preprocessing import PreprocessingConfig, preprocess_raw
+from .annotation import AnnotationConfig, annotate_raw_with_blocks
 
 
 @dataclass
@@ -35,6 +36,8 @@ class PipelineConfig:
         Parameter für Einlesen / Stream-Selektion.
     preprocessing:
         Parameter für Filterung / ICA etc.
+    annotation:
+        Parameter für Block-Annotation mit N-Back-Schwierigkeitsgraden.
     plot:
         (Optional) Visualisierungs-Parameter (derzeit leerer Platzhalter `PlotConfig`).
     output_dir:
@@ -43,6 +46,7 @@ class PipelineConfig:
 
     data_loading: DataLoadingConfig
     preprocessing: PreprocessingConfig
+    annotation: AnnotationConfig
     plot: PlotConfig
     output_dir: Optional[Path] = None
 
@@ -86,15 +90,32 @@ class EEGPipeline:
                 )
         print("✓ Preprocessing abgeschlossen")
 
-        # 3. Plot (Platzhalter) – könnte später differenziert werden (PSD, ERP, …)
+        # 3. Annotation (N-Back Blocks)
+        print("\nStep 3: Block Annotation")
+        for session in self.sessions:
+            if session.indoor_session and session.indoor_markers is not None:
+                session.indoor_session = annotate_raw_with_blocks(
+                    session.indoor_session,
+                    session.indoor_markers,
+                    self.config.annotation,
+                )
+            if session.outdoor_session and session.outdoor_markers is not None:
+                session.outdoor_session = annotate_raw_with_blocks(
+                    session.outdoor_session,
+                    session.outdoor_markers,
+                    self.config.annotation,
+                )
+        print("✓ Block-Annotation abgeschlossen")
+
+        # 4. Plot (Platzhalter) – könnte später differenziert werden (PSD, ERP, …)
         if self.config.plot:
             print("\nPlotting step started (derzeit Platzhalter)")
             # TODO: Implement plotting utilities.
             pass
 
-        # 4. Persistierung
+        # 5. Persistierung
         if self.config.output_dir:
-            print("\nStep 3: Save processed data")
+            print("\nStep 4: Save processed data")
             self._save_processed_data()
 
         print("\nPipeline finished!")
@@ -137,10 +158,17 @@ def create_default_config() -> PipelineConfig:
 
     Hinweis: `plot=None` deaktiviert den Plot-Schritt.
     """
+    from .annotation import auto_find_difficulty_extractor
+
     return PipelineConfig(
         data_loading=DataLoadingConfig(max_channels=8, montage="standard_1020"),
-        plot=None,
         preprocessing=PreprocessingConfig(l_freq=1.0, h_freq=40.0, notch_freq=50.0),
+        annotation=AnnotationConfig(
+            use_difficulty_mapping=True,
+            difficulty_extractor_path=auto_find_difficulty_extractor(),
+            annotation_prefix="nback",
+        ),
+        plot=None,
     )
 
 
