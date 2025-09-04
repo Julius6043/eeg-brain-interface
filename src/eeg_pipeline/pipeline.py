@@ -173,9 +173,9 @@ def create_default_config() -> PipelineConfig:
 
 def main():
     """CLI-Einstieg (einfaches Beispiel ohne Argumentparser)."""
-    data_dir = Path("data")
+    data_dir = Path(__file__).parent.parent.parent / "data"
     config = create_default_config()
-    config.output_dir = Path("results/processed")
+    config.output_dir = Path(__file__).parent.parent.parent / "results" / "processed"
 
     pipeline = EEGPipeline(config)
     sessions = pipeline.run(data_dir)
