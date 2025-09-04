@@ -322,8 +322,8 @@ def annotate_raw_with_markers(raw: Raw, markers_df: Optional[pd.DataFrame]) -> R
         return raw
 
     # Schätze EEG-Start-Zeit aus erstem Marker-Timestamp
-    # (Annahme: Marker und EEG wurden synchron gestartet)
-    eeg_start_time = markers_df["Timestamp"].min()
+    # EEG startet vor dem ersten Marker
+    eeg_start_time = raw.times[0]
 
     # Erstelle Annotationen (ohne Sampling-Rate)
     annotations = create_annotations_from_blocks_and_baseline(

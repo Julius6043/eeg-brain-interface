@@ -24,6 +24,7 @@ from eeg_pipeline.plot import PlotConfig
 from eeg_pipeline.data_loading import DataLoadingConfig, SessionData, load_all_sessions
 from eeg_pipeline.preprocessing import PreprocessingConfig, preprocess_raw
 from eeg_pipeline.marker_annotation import annotate_raw_with_markers
+from eeg_pipeline.epoching import EpochingConfig, create_epochs_from_raw
 import mne
 
 
@@ -37,6 +38,8 @@ class PipelineConfig:
         Parameter für Einlesen / Stream-Selektion.
     preprocessing:
         Parameter für Filterung / ICA etc.
+    epoching:
+        Parameter für Epoching (None = kein Epoching).
     plot:
         (Optional) Visualisierungs-Parameter (derzeit leerer Platzhalter `PlotConfig`).
     output_dir:
@@ -45,7 +48,8 @@ class PipelineConfig:
 
     data_loading: DataLoadingConfig
     preprocessing: PreprocessingConfig
-    plot: PlotConfig
+    epoching: Optional[EpochingConfig] = None
+    plot: PlotConfig = None
     output_dir: Optional[Path] = None
 
 
@@ -108,15 +112,23 @@ class EEGPipeline:
             print("\nStep 4: Epoching")
             for session in self.sessions:
                 if session.indoor_session and session.indoor_session.annotations:
-                    events_in, event_id_in = mne.events_from_annotations(
-                        session.indoor_session
+                    session.indoor_epochs = create_epochs_from_raw(
+                        session.indoor_session, self.config.epoching
                     )
+                    if session.indoor_epochs:
+                        print(
+                            f"  ✓ Indoor epochs created for {session.participant_name}: {len(session.indoor_epochs)} epochs"
+                        )
 
                 if session.outdoor_session and session.outdoor_session.annotations:
-                    events_out, event_id_out = mne.events_from_annotations(
-                        session.outdoor_session
+                    session.outdoor_epochs = create_epochs_from_raw(
+                        session.outdoor_session, self.config.epoching
                     )
-        print("✓ Epoching abgeschlossen")
+                    if session.outdoor_epochs:
+                        print(
+                            f"  ✓ Outdoor epochs created for {session.participant_name}: {len(session.outdoor_epochs)} epochs"
+                        )
+            print("✓ Epoching abgeschlossen")
 
         # 5. Plot (Platzhalter) – könnte später differenziert werden (PSD, ERP, …)
         if self.config.plot:
@@ -161,6 +173,17 @@ class EEGPipeline:
             else:
                 print("    ⚠ Keine Outdoor-Session verfügbar")
 
+            # Speichere Epochen falls vorhanden
+            if session.indoor_epochs:
+                indoor_epochs_path = session_dir / "indoor_processed-epo.fif"
+                session.indoor_epochs.save(str(indoor_epochs_path), overwrite=True)
+                print("    ✓ Indoor-Epochen gespeichert")
+
+            if session.outdoor_epochs:
+                outdoor_epochs_path = session_dir / "outdoor_processed-epo.fif"
+                session.outdoor_epochs.save(str(outdoor_epochs_path), overwrite=True)
+                print("    ✓ Outdoor-Epochen gespeichert")
+
         print(f"✓ Daten gespeichert in {self.config.output_dir}")
 
 
@@ -171,8 +194,9 @@ def create_default_config() -> PipelineConfig:
     """
     return PipelineConfig(
         data_loading=DataLoadingConfig(max_channels=8, montage="standard_1020"),
-        plot=None,
         preprocessing=PreprocessingConfig(l_freq=1.0, h_freq=40.0, notch_freq=50.0),
+        epoching=EpochingConfig(),  # Aktiviere Epoching mit Standard-Parametern
+        plot=None,
     )
 
 

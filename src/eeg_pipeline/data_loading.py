@@ -62,13 +62,18 @@ class SessionData:
     als "indoor" bezeichnet) und `ses-S002` ("outdoor"). Diese semantische
     Zuordnung erfolgt über Ordnernamen – es gibt keine zusätzliche Validierung
     anhand externer Metadaten.
+
+    Nach Epoching enthalten die *_epochs Felder die 3D-Datenstrukturen mit
+    entsprechenden Labels für Block-Namen und Schwierigkeitsgrade.
     """
 
     participant_name: str
     indoor_session: Optional[mne.io.Raw] = None
     indoor_markers: Optional[pd.DataFrame] = None
+    indoor_epochs: Optional[mne.Epochs] = None
     outdoor_session: Optional[mne.io.Raw] = None
     outdoor_markers: Optional[pd.DataFrame] = None
+    outdoor_epochs: Optional[mne.Epochs] = None
 
 
 def load_xdf_safe(path: Path) -> Tuple[Optional[list], Optional[dict]]:
@@ -240,21 +245,24 @@ def load_session_data(
     if eeg_stream is None:
         print("[WARN] Kein EEG-Stream gefunden")
         return None, None
-
+    first_eeg_timestamp = (
+        eeg_stream["time_stamps"][0] if "time_stamps" in eeg_stream else 0
+    )
     raw = eeg_stream_to_raw(eeg_stream, config)
 
-    # wandel marker_stream in DataFrame um (falls vorhanden)
+    # wandel marker_stream in DataFrame um (falls vorhanden) und justiere Zeitstempel
     markers = None
     if marker_stream and "time_series" in marker_stream:
         marker_data = np.array(marker_stream["time_series"])
         if marker_data.ndim == 1:
             marker_data = marker_data[:, np.newaxis]
-        timestamps = np.array(marker_stream["time_stamps"])
-        markers = pd.DataFrame(
-            marker_data, columns=[f"Marker{i+1}" for i in range(marker_data.shape[1])]
-        )
-        markers.insert(0, "Timestamp", timestamps)
-
+        markers = pd.DataFrame(marker_data, columns=["Description"])
+        if "time_stamps" in marker_stream:
+            markers["Timestamp"] = marker_stream["time_stamps"]
+            # Justiere Marker-Zeitstempel relativ zum EEG-Start
+            markers["Timestamp"] -= first_eeg_timestamp
+        else:
+            markers["Timestamp"] = np.nan
     return raw, markers
 
 
