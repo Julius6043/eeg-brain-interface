@@ -8,6 +8,7 @@ from .data_loading import DataLoadingConfig, SessionData, load_all_sessions
 from .preprocessing import PreprocessingConfig, preprocess_raw
 from .marker_annotation import annotate_raw_with_markers
 from .epoching import EpochingConfig, create_epochs_from_raw
+from .plot import PlotConfig
 from .pipeline import EEGPipeline, PipelineConfig, create_default_config
 
 __all__ = [
@@ -19,6 +20,7 @@ __all__ = [
     "annotate_raw_with_markers",
     "EpochingConfig",
     "create_epochs_from_raw",
+    "PlotConfig",
     "EEGPipeline",
     "PipelineConfig",
     "create_default_config",
