@@ -23,7 +23,8 @@ dependencies = [
     "braindecode",
     "pyprep",
     "mnelab",
-    "autoreject"
+    "autoreject",
+    "joblib"
 ]
 
 [project.scripts]

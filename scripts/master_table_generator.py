@@ -91,6 +91,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from typing import List, Tuple
+import sys
 
 import numpy as np
 import pandas as pd
@@ -106,6 +107,9 @@ except ImportError as exc:
     ) from exc
 
 # Import helper functions from the provided script to determine block difficulties.
+
+sys.path.append(r"C:\Users\morit\OneDrive\Desktop\Uni\Master Neuroscience\Semester 2\BPR\eeg-brain-interface")
+
 from Block_difficulty_extractor import calculate_nvals
 
 
@@ -632,3 +636,5 @@ if __name__ == '__main__':
         output_path = args.output_csv
 
     main(args.eeg_dir, args.marker_dir, output_path)
+
+    

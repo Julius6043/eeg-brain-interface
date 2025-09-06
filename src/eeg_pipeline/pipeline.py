@@ -20,11 +20,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from eeg_pipeline.plot import PlotConfig
-from eeg_pipeline.data_loading import DataLoadingConfig, SessionData, load_all_sessions
-from eeg_pipeline.preprocessing import PreprocessingConfig, preprocess_raw
-from eeg_pipeline.marker_annotation import annotate_raw_with_markers
-from eeg_pipeline.epoching import EpochingConfig, create_epochs_from_raw, validate_epochs
+from .plot import PlotConfig
+from .data_loading import DataLoadingConfig, SessionData, load_all_sessions
+from .preprocessing import PreprocessingConfig, preprocess_raw
+from .marker_annotation import annotate_raw_with_markers
+from .epoching import EpochingConfig, create_epochs_from_raw, validate_epochs
 import mne
 
 
@@ -211,7 +211,14 @@ def create_default_config() -> PipelineConfig:
     Hinweis: `plot=None` deaktiviert den Plot-Schritt.
     """
     return PipelineConfig(
-        data_loading=DataLoadingConfig(max_channels=8, montage="standard_1020"),
+        data_loading=DataLoadingConfig(
+            # For electrode importance analysis: use all 8 channels
+            channels_keep=None,  # Use all available channels (EEG1-EEG8)
+            # channels_keep=["EEG1", "EEG2", "EEG3", "EEG4", "EEG5", "EEG6", "EEG7"],  # Excludes EEG8
+            # channels_keep=["EEG1", "EEG3", "EEG4", "EEG5", "EEG6", "EEG7", "EEG8"],  # Excludes EEG2
+            max_channels=8, 
+            montage="standard_1020"
+        ),
         preprocessing=PreprocessingConfig(l_freq=4.0, h_freq=40.0, notch_freq=50.0),
         epoching=EpochingConfig(),  # Aktiviere Epoching mit Standard-Parametern
         plot=None,
