@@ -11,7 +11,22 @@ warnings.filterwarnings('ignore')
 
 # Konfiguration
 PARTICIPANT = "julian"  # Wähle einen Teilnehmer
-SESSION_TYPE = "outdoor"  # Nur Indoor Sessions
+SESSION_TYPE = "outdoor"  # Session type
+
+# === ANALYSIS CONFIGURATION ===
+# Option 1: Working memory load only (traditional approach)
+INCLUDE_0_BACK = False  # Set to True to include 0-back condition
+
+# === ELECTRODE SELECTION CONFIGURATION ===
+# Option 1: Use all electrodes (default)
+INCLUDE_CHANNELS = None  # None = use all available electrodes
+
+# Option 2: Use only specific electrodes (based on electrode importance analysis)
+# INCLUDE_CHANNELS = ["EEG1", "EEG2", "EEG4"]  # Example: top 3 most important
+
+# Option 3: Exclude specific electrodes
+EXCLUDE_CHANNELS = None  # None = don't exclude any electrodes
+# EXCLUDE_CHANNELS = ["EEG7", "EEG8"]  # Example: exclude least important
 
 def load_single_participant_session(participant, session_type):
     processed_dir = Path("results/processed")
@@ -24,41 +39,63 @@ def load_single_participant_session(participant, session_type):
     print(f"Loading data from: {epo_file}")
     epochs = mne.read_epochs(epo_file, preload=True, verbose=False)
 
-    difficulty_mapping = {
-        #'baseline': 0,
-        #'0-back': 0,
-        '1-back': 1,
-        '2-back': 2,
-        '3-back': 3
-    }
-
-    # Get labels from event names
-    event_id_rev = {v: k for k, v in epochs.event_id.items()}
-    event_names = [event_id_rev[event_id] for event_id in epochs.events[:, 2]]
-    difficulties = [difficulty_mapping.get(name, -1) for name in event_names]
-
-    # Filter out unknown events
-    valid_indices = [i for i, d in enumerate(difficulties) if d >= 0]
-    if len(valid_indices) < len(difficulties):
-        print(f"Filtered out {len(difficulties) - len(valid_indices)} unknown events")
-        epochs = epochs[valid_indices]
-        difficulties = [difficulties[i] for i in valid_indices]
+    # The difficulty labels are already assigned in epoching.py:
+    # 'baseline': 0, '0-back': 1, '1-back': 2, '2-back': 3, '3-back': 4
+    # Configure which conditions to analyze based on INCLUDE_0_BACK setting
+    if INCLUDE_0_BACK:
+        # Include 0-back for attention vs working memory analysis
+        analysis_events = ['0-back', '1-back', '2-back', '3-back']
+        print("Analysis mode: Attention (0-back) vs Working Memory (1,2,3-back)")
+        event_id_to_difficulty = {
+            epochs.event_id['0-back']: 0,  # 1 -> 0 (attention)
+            epochs.event_id['1-back']: 1,  # 2 -> 1 (low WM)
+            epochs.event_id['2-back']: 2,  # 3 -> 2 (medium WM)
+            epochs.event_id['3-back']: 3   # 4 -> 3 (high WM)
+        }
+    else:
+        # Traditional working memory load analysis only
+        analysis_events = ['1-back', '2-back', '3-back']
+        print("Analysis mode: Working Memory Load only (1,2,3-back)")
+        event_id_to_difficulty = {
+            epochs.event_id['1-back']: 1,  # 2 -> 1
+            epochs.event_id['2-back']: 2,  # 3 -> 2  
+            epochs.event_id['3-back']: 3   # 4 -> 3
+        }
+    
+    # Filter epochs to include only analysis conditions
+    epochs_filtered = epochs[analysis_events]
+    
+    if len(epochs_filtered) == 0:
+        raise ValueError(f"No analysis epochs found in {epo_file}")
+    
+    # Extract difficulty labels directly from event IDs
+    difficulties = [event_id_to_difficulty[event_id] for event_id in epochs_filtered.events[:, 2]]
 
     # Create metadata
     metadata = pd.DataFrame({
         'difficulty': difficulties,
-        'participant': [participant] * len(epochs),
-        'session_type': [session_type] * len(epochs)
+        'participant': [participant] * len(epochs_filtered),
+        'session_type': [session_type] * len(epochs_filtered)
     })
-    epochs.metadata = metadata
+    epochs_filtered.metadata = metadata
 
-    print(f"Loaded {len(epochs)} epochs from {participant} ({session_type})")
+    print(f"Loaded {len(epochs_filtered)} n-back epochs from {participant} ({session_type})")
     print(f"Event distribution: {dict(zip(*np.unique(difficulties, return_counts=True)))}")
 
-    return epochs
+    return epochs_filtered
 
-def extract_features(epochs_data):
-    """Extract bandpower features from epochs"""
+def extract_features(epochs_data, exclude_channels=None, include_channels=None):
+    """Extract bandpower features from epochs
+    
+    Parameters:
+    -----------
+    epochs_data : mne.Epochs
+        The epochs data
+    exclude_channels : list, optional
+        List of channel names to exclude (e.g., ['EEG1', 'EEG2'])
+    include_channels : list, optional
+        List of channel names to include (overrides exclude_channels if both provided)
+    """
 
     # Frequency bands for feature extraction
     bands = {
@@ -70,6 +107,23 @@ def extract_features(epochs_data):
 
     # Filter data
     ep_filt = epochs_data.copy().filter(4.0, 40.0, picks="eeg")
+    
+    # Handle channel selection
+    if include_channels is not None:
+        # Keep only specified channels
+        channels_to_keep = [ch for ch in include_channels if ch in ep_filt.ch_names]
+        channels_to_drop = [ch for ch in ep_filt.ch_names if ch not in channels_to_keep]
+        if channels_to_drop:
+            ep_filt.drop_channels(channels_to_drop)
+            print(f"Using only channels: {channels_to_keep}")
+    elif exclude_channels is not None:
+        # Drop specified channels
+        channels_to_drop = [ch for ch in exclude_channels if ch in ep_filt.ch_names]
+        if channels_to_drop:
+            ep_filt.drop_channels(channels_to_drop)
+            print(f"Excluded channels: {channels_to_drop}")
+    
+    print(f"Final channels used: {ep_filt.ch_names}")
 
     # Compute PSD
     try:
@@ -125,7 +179,8 @@ epochs = load_single_participant_session(PARTICIPANT, SESSION_TYPE)
 
 # 2) Features extrahieren
 print("\n=== Feature Extraction ===")
-X, col_names, ep_filt = extract_features(epochs)
+print(f"Electrode selection: include={INCLUDE_CHANNELS}, exclude={EXCLUDE_CHANNELS}")
+X, col_names, ep_filt = extract_features(epochs, exclude_channels=EXCLUDE_CHANNELS, include_channels=INCLUDE_CHANNELS)
 y = epochs.metadata["difficulty"].astype(int).to_numpy()
 
 print(f"Feature matrix: {X.shape} | Labels: {y.shape}")
@@ -169,12 +224,24 @@ rf = RandomForestClassifier(
     n_jobs=-1,
 )
 
-# Cross-validation
+# Cross-validation with multiple metrics
 cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-scores = cross_val_score(rf, X_selected, y, cv=cv, scoring="accuracy", n_jobs=-1)
 
-print(f"Cross-validation accuracy: {scores.mean():.3f} ± {scores.std():.3f}")
-print(f"Individual fold scores: {np.round(scores, 3)}")
+# Calculate multiple metrics
+metrics = ['accuracy', 'precision_macro', 'recall_macro', 'f1_macro']
+cv_results = {}
+
+for metric in metrics:
+    scores_metric = cross_val_score(rf, X_selected, y, cv=cv, scoring=metric, n_jobs=-1)
+    cv_results[metric] = {
+        'mean': scores_metric.mean(),
+        'std': scores_metric.std(),
+        'scores': scores_metric
+    }
+
+print(f"=== CROSS-VALIDATION RESULTS ===")
+for metric, results in cv_results.items():
+    print(f"{metric.upper()}: {results['mean']:.3f} ± {results['std']:.3f}")
 
 # Detailed evaluation
 y_pred = cross_val_predict(rf, X_selected, y, cv=cv, n_jobs=-1)
@@ -191,7 +258,7 @@ print(cm)
 maj = np.bincount(y).argmax()
 baseline_acc = (y == maj).mean()
 print(f"\nMajority class baseline: {baseline_acc:.3f} (class {maj})")
-print(f"Improvement over baseline: +{scores.mean() - baseline_acc:.3f}")
+print(f"Improvement over baseline: +{cv_results['accuracy']['mean'] - baseline_acc:.3f}")
 
 # 5) Feature Importance
 print("\n=== Feature Importance ===")
@@ -314,7 +381,8 @@ model_data = {
     'feature_names': selected_features,
     'participant': PARTICIPANT,
     'session_type': SESSION_TYPE,
-    'cv_scores': scores
+    'channels_used': ep_filt.ch_names,
+    'cv_results': cv_results
 }
 
 model_path = output_dir / f"rf_model_{PARTICIPANT}_{SESSION_TYPE}.joblib"
@@ -343,16 +411,21 @@ if len(selected_features) > 0:
 print(f"\n=== Summary ===")
 print(f"Participant: {PARTICIPANT}")
 print(f"Session: {SESSION_TYPE}")
+print(f"Channels used: {ep_filt.ch_names}")
 print(f"Total epochs: {len(epochs)}")
 print(f"Features: {X_selected.shape[1]}")
 print(f"Classes: {len(np.unique(y))}")
-print(f"Best CV accuracy: {scores.mean():.3f} ± {scores.std():.3f}")
+print(f"Best CV accuracy: {cv_results['accuracy']['mean']:.3f} ± {cv_results['accuracy']['std']:.3f}")
+print(f"Precision (macro): {cv_results['precision_macro']['mean']:.3f} ± {cv_results['precision_macro']['std']:.3f}")
+print(f"Recall (macro): {cv_results['recall_macro']['mean']:.3f} ± {cv_results['recall_macro']['std']:.3f}")
+print(f"F1-score (macro): {cv_results['f1_macro']['mean']:.3f} ± {cv_results['f1_macro']['std']:.3f}")
 print(f"Baseline accuracy: {baseline_acc:.3f}")
 
 # Performance interpretation
-if scores.mean() > baseline_acc + 0.1:
+accuracy_mean = cv_results['accuracy']['mean']
+if accuracy_mean > baseline_acc + 0.1:
     print("✓ Model shows good discrimination ability")
-elif scores.mean() > baseline_acc + 0.05:
+elif accuracy_mean > baseline_acc + 0.05:
     print("~ Model shows moderate discrimination ability")
 else:
     print("⚠ Model performance is close to baseline - may need more data or better features")

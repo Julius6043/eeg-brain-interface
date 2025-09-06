@@ -13,6 +13,9 @@ PARTICIPANT = "julian"  # Wähle einen Teilnehmer
 SESSION_TYPE = "outdoor"  # Session type
 ALL_ELECTRODES = ["EEG1", "EEG2", "EEG3", "EEG4", "EEG5", "EEG6", "EEG7", "EEG8"]
 
+# === ANALYSIS CONFIGURATION ===
+INCLUDE_0_BACK = False  # Set to True to include 0-back condition for attention vs WM analysis
+
 def load_single_participant_session(participant, session_type):
     """Load epochs for a single participant and session"""
     processed_dir = Path("results/processed")
@@ -24,36 +27,51 @@ def load_single_participant_session(participant, session_type):
     print(f"Loading data from: {epo_file}")
     epochs = mne.read_epochs(epo_file, preload=True, verbose=False)
 
-    difficulty_mapping = {
-        '1-back': 1,
-        '2-back': 2,
-        '3-back': 3
-    }
-
-    # Get labels from event names
-    event_id_rev = {v: k for k, v in epochs.event_id.items()}
-    event_names = [event_id_rev[event_id] for event_id in epochs.events[:, 2]]
-    difficulties = [difficulty_mapping.get(name, -1) for name in event_names]
-
-    # Filter out unknown events
-    valid_indices = [i for i, d in enumerate(difficulties) if d >= 0]
-    if len(valid_indices) < len(difficulties):
-        print(f"Filtered out {len(difficulties) - len(valid_indices)} unknown events")
-        epochs = epochs[valid_indices]
-        difficulties = [difficulties[i] for i in valid_indices]
+    # The difficulty labels are already assigned in epoching.py:
+    # 'baseline': 0, '0-back': 1, '1-back': 2, '2-back': 3, '3-back': 4
+    
+    # Configure which conditions to analyze based on INCLUDE_0_BACK setting
+    if INCLUDE_0_BACK:
+        # Include 0-back for attention vs working memory analysis
+        analysis_events = ['0-back', '1-back', '2-back', '3-back']
+        print("Analysis mode: Attention (0-back) vs Working Memory (1,2,3-back)")
+        event_id_to_difficulty = {
+            epochs.event_id['0-back']: 0,  # 1 -> 0 (attention)
+            epochs.event_id['1-back']: 1,  # 2 -> 1 (low WM)
+            epochs.event_id['2-back']: 2,  # 3 -> 2 (medium WM)
+            epochs.event_id['3-back']: 3   # 4 -> 3 (high WM)
+        }
+    else:
+        # Traditional working memory load analysis only
+        analysis_events = ['1-back', '2-back', '3-back']
+        print("Analysis mode: Working Memory Load only (1,2,3-back)")
+        event_id_to_difficulty = {
+            epochs.event_id['1-back']: 1,  # 2 -> 1
+            epochs.event_id['2-back']: 2,  # 3 -> 2  
+            epochs.event_id['3-back']: 3   # 4 -> 3
+        }
+    
+    # Filter epochs to include only analysis conditions
+    epochs_filtered = epochs[analysis_events]
+    
+    if len(epochs_filtered) == 0:
+        raise ValueError(f"No analysis epochs found in {epo_file}")
+    
+    # Extract difficulty labels directly from event IDs
+    difficulties = [event_id_to_difficulty[event_id] for event_id in epochs_filtered.events[:, 2]]
 
     # Create metadata
     metadata = pd.DataFrame({
         'difficulty': difficulties,
-        'participant': [participant] * len(epochs),
-        'session_type': [session_type] * len(epochs)
+        'participant': [participant] * len(epochs_filtered),
+        'session_type': [session_type] * len(epochs_filtered)
     })
-    epochs.metadata = metadata
+    epochs_filtered.metadata = metadata
 
-    print(f"Loaded {len(epochs)} epochs from {participant} ({session_type})")
+    print(f"Loaded {len(epochs_filtered)} analysis epochs from {participant} ({session_type})")
     print(f"Event distribution: {dict(zip(*np.unique(difficulties, return_counts=True)))}")
 
-    return epochs
+    return epochs_filtered
 
 def extract_features(epochs_data, exclude_channels=None):
     """Extract bandpower features from epochs, optionally excluding specific channels"""
