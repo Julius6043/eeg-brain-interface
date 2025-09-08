@@ -155,8 +155,11 @@ def train_eegnet_with_cv():
             n_chans=n_chans,
             n_outputs=n_classes,
             final_conv_length='auto',
-            pool_mode='max',
-            kernel_length=64,
+            pool_mode='mean',
+            kernel_length=32,
+            F1=16,
+            D=4,
+            F2=64,
         )
 
         train_epochs = epochs[train_idx]
@@ -186,9 +189,9 @@ def train_eegnet_with_cv():
             model,
             criterion=torch.nn.CrossEntropyLoss,
             optimizer=torch.optim.AdamW,
-            optimizer__lr=0.001,
-            optimizer__weight_decay=0.01,
-            batch_size=16,
+            optimizer__lr=0.01,
+            # optimizer__weight_decay=0.01,
+            batch_size=64,
             max_epochs=100,
             train_split=predefined_split(test_dataset),
             device=device,
