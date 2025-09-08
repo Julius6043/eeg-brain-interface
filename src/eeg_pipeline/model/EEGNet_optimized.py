@@ -54,57 +54,96 @@ warnings.filterwarnings("ignore")
 
 
 class AdvancedEEGPreprocessor:
-    """Erweiterte EEG-Präprozessierung für bessere Signal-Qualität."""
+    """Erweiterte EEG-Präprozessierung für bessere Signal-Qualität.
+    
+    Diese Klasse implementiert fortgeschrittene Präprozessierungsmethoden,
+    die speziell für EEG-Signale entwickelt wurden:
+    
+    1. Spektrale Normalisierung basierend auf Frequenzbändern
+    2. Statistische Outlier-Erkennung und -Korrektur
+    3. Robuste Skalierung für bessere Generalisierung
+    4. Adaptive Baseline-Korrektur
+    
+    Die Methoden sind darauf ausgelegt, Artefakte zu reduzieren und
+    die Signal-zu-Rausch-Verhältnis zu verbessern, was zu besseren
+    Machine Learning Ergebnissen führt.
+    """
 
     def __init__(self, sfreq: float = 250.0):
-        """
+        """Initialisiert den erweiterten EEG-Präprozessor.
+        
         Parameter
         ---------
-        sfreq : float
-            Sampling-Frequenz der EEG-Daten
+        sfreq : float, default=250.0
+            Sampling-Frequenz der EEG-Daten in Hz.
+            Typische Werte: 250Hz, 500Hz, 1000Hz
+            Diese wird für spektrale Analysen und Filter benötigt.
         """
         self.sfreq = sfreq
+        # RobustScaler ist weniger anfällig für Outliers als StandardScaler
+        # Er verwendet Median und IQR statt Mean und Standardabweichung
         self.robust_scaler = RobustScaler()
 
     def apply_spectral_normalization(self, data: np.ndarray) -> np.ndarray:
         """Normalisiert EEG-Daten basierend auf spektraler Power.
+        
+        Diese Methode analysiert die Frequenzzusammensetzung jedes EEG-Kanals
+        und normalisiert die Signale basierend auf der Power in wichtigen
+        Frequenzbändern (Alpha: 8-13 Hz, Beta: 13-30 Hz).
+        
+        Warum spektrale Normalisierung?
+        - EEG-Signale haben unterschiedliche Power in verschiedenen Frequenzbändern
+        - Alpha-Rhythmus (8-13 Hz) ist oft dominant bei geschlossenen Augen
+        - Beta-Rhythmus (13-30 Hz) ist mit kognitiver Aktivität verbunden
+        - Normalisierung hilft, diese biologischen Unterschiede auszugleichen
 
         Parameter
         ---------
-        data : np.ndarray
-            EEG-Daten (n_epochs, n_channels, n_times)
+        data : np.ndarray, shape (n_epochs, n_channels, n_times)
+            EEG-Daten mit:
+            - n_epochs: Anzahl der Zeitfenster/Trials
+            - n_channels: Anzahl der EEG-Elektroden
+            - n_times: Anzahl der Zeitpunkte pro Epoche
 
         Returns
         -------
         np.ndarray
-            Spektral normalisierte Daten
+            Spektral normalisierte Daten mit gleicher Form wie Input
         """
         normalized_data = np.zeros_like(data)
 
+        # Iteration über alle Epochen und Kanäle
         for epoch_idx in range(data.shape[0]):
             for ch_idx in range(data.shape[1]):
-                # Berechne Power Spectral Density
+                # Welch-Methode für Power Spectral Density (PSD) Schätzung
+                # nperseg: Länge jedes Segments für die FFT
+                # Kleinere Segmente = bessere Zeitauflösung, schlechtere Frequenzauflösung
                 freqs, psd = signal.welch(
                     data[epoch_idx, ch_idx, :],
                     fs=self.sfreq,
-                    nperseg=min(256, data.shape[2] // 4),
+                    nperseg=min(256, data.shape[2] // 4),  # Adaptive Segmentlänge
                 )
 
-                # Normalisiere basierend auf dominanter Frequenz-Power
+                # Definiere klinisch relevante Frequenzbänder
+                # Alpha-Band: Entspannung, geschlossene Augen, Default Mode Network
                 alpha_band = (freqs >= 8) & (freqs <= 13)
+                # Beta-Band: Aufmerksamkeit, motorische Kontrolle, kognitive Prozesse
                 beta_band = (freqs >= 13) & (freqs <= 30)
 
                 if np.any(alpha_band) and np.any(beta_band):
+                    # Berechne mittlere Power in den Frequenzbändern
                     alpha_power = np.mean(psd[alpha_band])
                     beta_power = np.mean(psd[beta_band])
 
-                    # Adaptive Normalisierung basierend auf Frequency-Power
+                    # Adaptive Normalisierung basierend auf kombinierter Power
+                    # Epsilon (1e-8) verhindert Division durch Null
                     norm_factor = np.sqrt(alpha_power + beta_power + 1e-8)
                     normalized_data[epoch_idx, ch_idx, :] = (
                         data[epoch_idx, ch_idx, :] / norm_factor
                     )
                 else:
-                    # Fallback: Standard Z-Score
+                    # Fallback: Standard Z-Score Normalisierung
+                    # zscore = (x - mean) / std
                     normalized_data[epoch_idx, ch_idx, :] = zscore(
                         data[epoch_idx, ch_idx, :]
                     )
@@ -115,34 +154,54 @@ class AdvancedEEGPreprocessor:
         self, data: np.ndarray, threshold_factor: float = 3.0
     ) -> np.ndarray:
         """Entfernt Artefakte basierend auf statistischen Outliers.
+        
+        Diese Methode identifiziert und korrigiert Artefakte in EEG-Signalen
+        mithilfe robuster statistischer Methoden. Artefakte können entstehen durch:
+        - Augenbewegungen (EOG-Artefakte)
+        - Muskelaktivität (EMG-Artefakte) 
+        - Elektrische Störungen
+        - Bewegungsartefakte
+        
+        Strategie:
+        1. Berechnung der RMS (Root Mean Square) Power pro Epoche
+        2. Outlier-Erkennung mit MAD (Median Absolute Deviation)
+        3. Korrektur durch Tiefpassfilterung und Skalierung
 
         Parameter
         ---------
-        data : np.ndarray
-            EEG-Daten (n_epochs, n_channels, n_times)
-        threshold_factor : float
-            Faktor für Outlier-Erkennung
+        data : np.ndarray, shape (n_epochs, n_channels, n_times)
+            EEG-Rohdaten
+        threshold_factor : float, default=3.0
+            Faktor für Outlier-Schwellwert. Höhere Werte = weniger aggressive Korrektur
+            Typische Werte: 2.0 (aggressiv), 3.0 (moderat), 4.0 (konservativ)
 
         Returns
         -------
         np.ndarray
-            Bereinigte Daten
+            Bereinigte Daten mit reduzierten Artefakten
         """
         cleaned_data = data.copy()
 
+        # Verarbeite jeden EEG-Kanal separat
         for ch_idx in range(data.shape[1]):
-            # Berechne Kanal-spezifische Statistiken
-            ch_data = data[:, ch_idx, :]
+            # Extrahiere alle Epochen für diesen Kanal
+            ch_data = data[:, ch_idx, :]  # Shape: (n_epochs, n_times)
 
-            # RMS-Power pro Epoche
+            # RMS-Power Berechnung pro Epoche
+            # RMS = sqrt(mean(x^2)) - misst die "Energie" des Signals
             rms_power = np.sqrt(np.mean(ch_data**2, axis=1))
 
-            # Outlier-Erkennung basierend auf RMS
+            # Robuste Outlier-Erkennung mit MAD
+            # MAD ist robuster gegenüber Extremwerten als Standardabweichung
             median_power = np.median(rms_power)
+            # MAD = Median der absoluten Abweichungen vom Median
             mad = np.median(np.abs(rms_power - median_power))
+            
+            # Schwellwert für Outlier-Klassifikation
+            # Epochen mit RMS > threshold werden als Artefakte betrachtet
             threshold = median_power + threshold_factor * mad
 
-            # Korrigiere Outlier-Epochen
+            # Identifiziere Outlier-Epochen
             outlier_epochs = rms_power > threshold
 
             if np.any(outlier_epochs):
@@ -150,15 +209,18 @@ class AdvancedEEGPreprocessor:
                     f"Channel {ch_idx}: Correcting {np.sum(outlier_epochs)} outlier epochs"
                 )
 
-                # Ersetze Outliers mit gefilterten Versionen
+                # Korrigiere jede Outlier-Epoche
                 for epoch_idx in np.where(outlier_epochs)[0]:
-                    # Butterworth Low-Pass Filter
+                    # Butterworth Low-Pass Filter zur Artefakt-Reduktion
+                    # 4. Ordnung, 40 Hz Grenzfrequenz (entfernt hochfrequente Artefakte)
+                    # sos = Second-Order Sections (numerisch stabiler als ba-Format)
                     sos = signal.butter(4, 40, btype="low", fs=self.sfreq, output="sos")
                     filtered_signal = signal.sosfilt(sos, ch_data[epoch_idx, :])
 
-                    # Skaliere auf median power
+                    # Skaliere gefilterte Epoche auf normale Power-Level
                     current_rms = np.sqrt(np.mean(filtered_signal**2))
                     if current_rms > 0:
+                        # Skalierungsfaktor = erwünschte_power / aktuelle_power
                         scale_factor = median_power / current_rms
                         cleaned_data[epoch_idx, ch_idx, :] = (
                             filtered_signal * scale_factor
@@ -168,7 +230,31 @@ class AdvancedEEGPreprocessor:
 
 
 class AttentionEEGNet(nn.Module):
-    """EEGNet mit Attention-Mechanismus für bessere Performance."""
+    """EEGNet mit Attention-Mechanismus für bessere Performance.
+    
+    Diese erweiterte Version des klassischen EEGNet implementiert:
+    
+    1. **Multi-Scale Temporal Convolutions**: 
+       - Verschiedene Kernel-Größen erfassen Muster unterschiedlicher Zeitskalen
+       - Kurze Kernel (16): Schnelle Ereignisse (50+ Hz)
+       - Mittlere Kernel (32): Alpha/Beta-Rhythmen (8-30 Hz)
+       - Lange Kernel (64): Langsame Oszillationen (<8 Hz)
+    
+    2. **Spatial Attention Mechanism**:
+       - Automatische Gewichtung wichtiger Zeitfenster
+       - Adaptive Fokussierung auf relevante EEG-Features
+       - Reduziert irrelevante Hintergrundrauschen
+    
+    3. **Optimierte Architektur**:
+       - Batch Normalization für stabile Trainings-Dynamik
+       - Dropout für Overfitting-Reduktion
+       - ELU-Aktivierung (bessere Gradienten als ReLU)
+    
+    Die Architektur folgt dem bewährten EEGNet-Paradigma:
+    Block 1: Temporal → Spatial Feature Extraction
+    Block 2: Multi-Scale Separable Convolutions
+    Block 3: Attention-gewichtete Klassifikation
+    """
 
     def __init__(
         self,
@@ -182,115 +268,252 @@ class AttentionEEGNet(nn.Module):
         drop_prob: float = 0.25,
         pool_mode: str = "mean",
     ):
+        """Initialisiert das Attention-erweiterte EEGNet.
+        
+        Parameter
+        ---------
+        n_chans : int
+            Anzahl der EEG-Kanäle (z.B. 8, 16, 32, 64)
+        n_outputs : int 
+            Anzahl der Ausgabe-Klassen (hier: 3 für n-back Schwierigkeiten)
+        n_times : int
+            Anzahl der Zeitpunkte pro Epoche (abhängig von Sampling-Rate und Fensterlänge)
+        F1 : int, default=8
+            Anzahl der temporalen Filter im ersten Block
+            Mehr Filter = mehr Kapazität, aber auch mehr Parameter
+        D : int, default=2
+            Tiefe der Depthwise Convolution (räumliche Filter pro temporalem Filter)
+            Bestimmt die räumliche Komplexität des Modells
+        F2 : int, default=16
+            Anzahl der separablen Filter im zweiten Block
+            Sollte typischerweise F1 * D entsprechen
+        kernel_length : int, default=64
+            Länge des temporalen Kernels (in Samples)
+            Größere Kernel erfassen längere zeitliche Abhängigkeiten
+        drop_prob : float, default=0.25
+            Dropout-Wahrscheinlichkeit für Regularisierung
+            Höhere Werte = mehr Regularisierung, weniger Overfitting
+        pool_mode : str, default="mean"
+            Pooling-Modus (aktuell nicht verwendet, für zukünftige Erweiterungen)
+        """
         super().__init__()
 
+        # Speichere Architektur-Parameter
         self.n_chans = n_chans
         self.n_outputs = n_outputs
         self.n_times = n_times
 
-        # Block 1: Temporal Convolution + Spatial Filtering
+        # === BLOCK 1: TEMPORAL UND SPATIAL FEATURE EXTRACTION ===
+        
+        # Temporal Convolution: Erfasst zeitliche Muster
+        # Input: (batch, 1, n_chans, n_times)
+        # Output: (batch, F1, n_chans, n_times)
+        # Padding sorgt dafür, dass die Zeitdimension erhalten bleibt
         self.conv_temporal = nn.Conv2d(
             1, F1, (1, kernel_length), padding=(0, kernel_length // 2)
         )
         self.batchnorm1 = nn.BatchNorm2d(F1)
 
-        # Depthwise Convolution für jeden Kanal
+        # Depthwise Spatial Convolution: Kombiniert Informationen zwischen Kanälen
+        # Input: (batch, F1, n_chans, n_times)  
+        # Output: (batch, F1*D, 1, n_times)
+        # groups=F1 bedeutet: jeder Input-Kanal wird separat verarbeitet
         self.conv_spatial = nn.Conv2d(F1, F1 * D, (n_chans, 1), groups=F1)
         self.batchnorm2 = nn.BatchNorm2d(F1 * D)
         self.dropout1 = nn.Dropout(drop_prob)
 
-        # Multi-Scale Temporal Features
+        # === BLOCK 2: MULTI-SCALE TEMPORAL FEATURES ===
+        
+        # Drei verschiedene Kernel-Größen für Multi-Scale Feature Extraction
+        # Jede Größe erfasst Muster auf verschiedenen Zeitskalen
+        
+        # Kurze Zeitskala (16 samples): Schnelle Ereignisse, Gamma-Rhythmen
         self.conv_sep1 = nn.Conv2d(F1 * D, F2, (1, 16), padding=(0, 8))
+        # Mittlere Zeitskala (32 samples): Alpha/Beta-Rhythmen  
         self.conv_sep2 = nn.Conv2d(F1 * D, F2, (1, 32), padding=(0, 16))
+        # Lange Zeitskala (64 samples): Theta/Delta-Rhythmen
         self.conv_sep3 = nn.Conv2d(F1 * D, F2, (1, 64), padding=(0, 32))
 
-        self.batchnorm3 = nn.BatchNorm2d(F2 * 3)  # 3 verschiedene Kernel-Größen
+        # Batch Normalization für alle drei Feature-Streams
+        # F2 * 3 weil wir drei parallel verarbeitete Feature-Maps haben
+        self.batchnorm3 = nn.BatchNorm2d(F2 * 3)  
         self.dropout2 = nn.Dropout(drop_prob)
 
-        # Attention-Mechanismus
+        # === BLOCK 3: ATTENTION MECHANISM ===
+        
+        # Spatial Attention: Lernt, welche Zeitfenster wichtig sind
         attention_features = F2 * 3
         self.attention = nn.Sequential(
-            nn.AdaptiveAvgPool2d((1, None)),  # Global Average Pooling über Kanäle
+            # Global Average Pooling über räumliche Dimension (Kanäle → 1)
+            nn.AdaptiveAvgPool2d((1, None)),  
+            # Kompression: Reduziere Feature-Dimensionalität um Faktor 4
             nn.Conv2d(attention_features, attention_features // 4, 1),
             nn.ReLU(),
+            # Expansion: Zurück zur ursprünglichen Dimensionalität
             nn.Conv2d(attention_features // 4, attention_features, 1),
+            # Sigmoid: Attention-Gewichte zwischen 0 und 1
             nn.Sigmoid(),
         )
 
-        # Adaptive Pooling für flexible Input-Größen
+        # === BLOCK 4: CLASSIFICATION ===
+        
+        # Adaptive Pooling für einheitliche Feature-Größe
+        # Unabhängig von Input-Zeitlänge → (1, 8) Features
         self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 8))
 
-        # Classifier mit Label Smoothing Support
+        # Multi-Layer Classifier mit progressiver Dimensionsreduktion
         self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(F2 * 3 * 8, 128),
+            nn.Flatten(),                           # (batch, F2*3*8)
+            nn.Linear(F2 * 3 * 8, 128),           # Erste versteckte Schicht
             nn.ReLU(),
             nn.Dropout(drop_prob),
-            nn.Linear(128, 64),
+            nn.Linear(128, 64),                    # Zweite versteckte Schicht  
             nn.ReLU(),
-            nn.Dropout(drop_prob * 0.5),
-            nn.Linear(64, n_outputs),
+            nn.Dropout(drop_prob * 0.5),          # Reduziertes Dropout
+            nn.Linear(64, n_outputs),             # Ausgabe: n-back Klassen
         )
 
-        # Initialize weights
+        # Initialisiere Gewichte mit optimierten Strategien
         self._initialize_weights()
 
     def _initialize_weights(self):
-        """Verbesserte Gewichts-Initialisierung für EEG-Daten."""
+        """Verbesserte Gewichts-Initialisierung für EEG-Daten.
+        
+        Verwendet verschiedene Initialisierungsstrategien je nach Layer-Typ:
+        
+        1. **Convolutional Layers**: Kaiming Normal Initialization
+           - Entwickelt für ReLU-ähnliche Aktivierungen (ELU)
+           - Berücksichtigt Fan-Out für optimale Gradienten-Propagation
+           - Verhindert exploding/vanishing gradients
+        
+        2. **Batch Normalization**: Standard-Initialisierung
+           - Gewichte = 1 (keine Skalierung)
+           - Bias = 0 (keine Verschiebung)
+           - Lässt BN die optimale Normalisierung lernen
+        
+        3. **Linear Layers**: Kleine normale Verteilung
+           - Gewichte ~ N(0, 0.01) für stabile Initialisierung
+           - Bias = 0 für symmetrische Startbedingungen
+        """
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
+                # Kaiming-Initialisierung für Convolutional Layers
+                # mode='fan_out': Berücksichtigt Output-Neuronen
+                # nonlinearity='relu': Optimiert für ReLU/ELU-Aktivierungen
                 nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
+                # Standard BN-Initialisierung
+                nn.init.constant_(m.weight, 1)  # Keine anfängliche Skalierung
+                nn.init.constant_(m.bias, 0)    # Keine anfängliche Verschiebung
             elif isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0, 0.01)
+                # Kleine Normalverteilung für Fully Connected Layers
+                nn.init.normal_(m.weight, 0, 0.01)  # N(μ=0, σ=0.01)
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
-        # Input: (batch, n_chans, n_times)
-        # Reshape to (batch, 1, n_chans, n_times)
+        """Forward Pass durch das Attention-EEGNet.
+        
+        Implementiert den vollständigen Datenfluss von Input zu Output:
+        
+        Datenfluss-Schritte:
+        1. Input-Reformatierung für CNN-Verarbeitung
+        2. Block 1: Temporal + Spatial Feature Extraction  
+        3. Block 2: Multi-Scale Temporal Processing
+        4. Block 3: Attention-Mechanismus
+        5. Block 4: Classification
+        
+        Parameter
+        ---------
+        x : torch.Tensor
+            Input-Tensor mit EEG-Daten
+            Shape: (batch_size, n_channels, n_times) oder (batch_size, 1, n_channels, n_times)
+        
+        Returns
+        -------
+        torch.Tensor
+            Klassen-Logits, Shape: (batch_size, n_outputs)
+            Für n-back: [logit_1back, logit_2back, logit_3back]
+        """
+        # === INPUT PREPROCESSING ===
+        # EEGNet erwartet 4D Input: (batch, 1, n_chans, n_times)
+        # Falls 3D Input: Füge Kanal-Dimension hinzu
         if x.dim() == 3:
-            x = x.unsqueeze(1)
+            x = x.unsqueeze(1)  # (batch, n_chans, n_times) → (batch, 1, n_chans, n_times)
 
-        # Block 1
-        x = self.conv_temporal(x)
-        x = self.batchnorm1(x)
-        x = self.conv_spatial(x)
-        x = self.batchnorm2(x)
-        x = F.elu(x)
-        x = F.avg_pool2d(x, (1, 4))
-        x = self.dropout1(x)
+        # === BLOCK 1: TEMPORAL UND SPATIAL FEATURES ===
+        
+        # Temporal Convolution: Erfasse zeitliche Muster
+        x = self.conv_temporal(x)              # (batch, F1, n_chans, n_times)
+        x = self.batchnorm1(x)                 # Normalisiere Feature-Aktivierungen
+        
+        # Spatial Convolution: Kombiniere Kanal-Informationen
+        x = self.conv_spatial(x)               # (batch, F1*D, 1, n_times)
+        x = self.batchnorm2(x)                 # Stabilisiere Training
+        x = F.elu(x)                          # ELU-Aktivierung (bessere Gradienten als ReLU)
+        x = F.avg_pool2d(x, (1, 4))           # Zeitliche Dimensionsreduktion
+        x = self.dropout1(x)                   # Regularisierung
 
-        # Multi-Scale Temporal Features
-        x1 = self.conv_sep1(x)
-        x2 = self.conv_sep2(x)
-        x3 = self.conv_sep3(x)
+        # === BLOCK 2: MULTI-SCALE TEMPORAL FEATURES ===
+        
+        # Drei parallele Convolution-Pfade mit verschiedenen Kernel-Größen
+        x1 = self.conv_sep1(x)                # Kurze Zeitskala (16 samples)
+        x2 = self.conv_sep2(x)                # Mittlere Zeitskala (32 samples)  
+        x3 = self.conv_sep3(x)                # Lange Zeitskala (64 samples)
 
-        # Concatenate multi-scale features
-        x = torch.cat([x1, x2, x3], dim=1)
-        x = self.batchnorm3(x)
-        x = F.elu(x)
+        # Kombiniere Multi-Scale Features entlang der Feature-Dimension
+        x = torch.cat([x1, x2, x3], dim=1)    # (batch, F2*3, 1, n_times_reduced)
+        x = self.batchnorm3(x)                 # Normalisiere kombinierte Features
+        x = F.elu(x)                          # Nicht-lineare Aktivierung
 
-        # Apply attention
-        attention_weights = self.attention(x)
-        x = x * attention_weights
+        # === BLOCK 3: ATTENTION MECHANISM ===
+        
+        # Berechne Attention-Gewichte für jeden Zeitpunkt
+        attention_weights = self.attention(x)   # (batch, F2*3, 1, n_times_reduced)
+        # Element-wise Multiplikation: Gewichte × Features
+        x = x * attention_weights              # Fokussiere auf wichtige Zeitfenster
 
-        # Pooling and classification
-        x = F.avg_pool2d(x, (1, 8))
-        x = self.dropout2(x)
-        x = self.adaptive_pool(x)
+        # === BLOCK 4: CLASSIFICATION ===
+        
+        # Weitere Dimensionsreduktion durch Pooling
+        x = F.avg_pool2d(x, (1, 8))           # Reduziere Zeitdimension
+        x = self.dropout2(x)                   # Regularisierung
+        
+        # Adaptive Pooling für einheitliche Feature-Größe
+        x = self.adaptive_pool(x)              # (batch, F2*3, 1, 8)
 
-        # Classification
-        x = self.classifier(x)
+        # Classification durch Fully Connected Layers
+        x = self.classifier(x)                 # (batch, n_outputs)
 
         return x
 
 
 class OptimizedEEGNetTrainer:
-    """Optimierter EEGNet Trainer mit erweiterten Features."""
+    """Optimierter EEGNet Trainer mit erweiterten Features.
+    
+    Diese Klasse orchestriert das komplette Training eines EEGNet-Modells
+    für n-back Klassifikation mit folgenden Optimierungen:
+    
+    **Training-Strategien:**
+    - Cross-Validation für robuste Performance-Bewertung
+    - Label Smoothing zur Reduktion von Overconfidence
+    - Advanced Learning Rate Scheduling
+    - Gradient Clipping für stabile Konvergenz
+    - Early Stopping zur Overfitting-Vermeidung
+    
+    **Daten-Optimierungen:**
+    - Temporal Splitting (verhindert Data Leakage)
+    - Class-balanced Sampling
+    - Erweiterte EEG-Präprozessierung
+    - Robust Scaling für bessere Generalisierung
+    
+    **Architektur-Features:**
+    - Multi-Scale Temporal Convolutions
+    - Spatial Attention Mechanism  
+    - Optimierte Hyperparameter für EEG-Daten
+    - Ensemble-basierte Vorhersagen
+    """
 
     def __init__(
         self,
@@ -311,8 +534,74 @@ class OptimizedEEGNetTrainer:
         label_smoothing_factor: float = 0.1,
         use_attention: bool = True,
     ):
-        """Initialisiert optimierten EEGNet Trainer."""
+        """Initialisiert optimierten EEGNet Trainer.
+        
+        Parameter
+        ---------
+        n_chans : int, default=8
+            Anzahl der EEG-Kanäle im Input
+            Typische Werte: 8 (mobile EEG), 32 (klinisch), 64 (Forschung)
+            
+        n_outputs : int, default=3  
+            Anzahl der Zielklassen (1-back, 2-back, 3-back)
+            
+        input_window_samples : int, optional
+            Länge der Zeitfenster in Samples
+            Wird automatisch aus Daten bestimmt wenn None
+            
+        F1 : int, default=12
+            Anzahl temporaler Filter im ersten Block
+            Höhere Werte = mehr Lernkapazität, mehr Parameter
+            
+        D : int, default=3
+            Tiefe der Depthwise Convolution  
+            Bestimmt räumliche Komplexität (F1 * D = räumliche Features)
+            
+        F2 : int, default=24
+            Anzahl separabler Filter im zweiten Block
+            Sollte ≈ F1 * D für optimale Performance
+            
+        kernel_length : int, default=64
+            Temporale Kernel-Größe in Samples
+            Größere Werte erfassen längere zeitliche Abhängigkeiten
+            
+        drop_prob : float, default=0.3
+            Dropout-Wahrscheinlichkeit für Regularisierung
+            0.2-0.5 typisch für EEG (höher als Computer Vision)
+            
+        batch_size : int, default=32
+            Mini-Batch Größe für Training
+            Kleinere Batches oft besser für EEG (16-64)
+            
+        lr : float, default=0.002
+            Initiale Lernrate für Optimizer
+            EEG benötigt oft niedrigere LR als andere Domänen
+            
+        weight_decay : float, default=0.001
+            L2-Regularisierung für Gewichte
+            Verhindert Overfitting bei kleinen Datensätzen
+            
+        n_epochs : int, default=150
+            Maximale Anzahl Trainings-Epochen
+            Early Stopping verhindert unnötig langes Training
+            
+        device : str, default="auto"
+            Compute-Device ("cuda", "cpu", oder "auto")
+            "auto" wählt automatisch GPU falls verfügbar
+            
+        use_label_smoothing : bool, default=True
+            Aktiviert Label Smoothing in Loss-Function
+            Reduziert Overconfidence und verbessert Generalisierung
+            
+        label_smoothing_factor : float, default=0.1
+            Stärke des Label Smoothing (0.0 = aus, 0.1-0.2 typisch)
+            
+        use_attention : bool, default=True
+            Verwendet Attention-erweiterte Architektur
+            Meist bessere Performance als Standard-EEGNet
+        """
 
+        # Speichere Architektur-Parameter
         self.n_chans = n_chans
         self.n_outputs = n_outputs
         self.input_window_samples = input_window_samples
@@ -324,15 +613,18 @@ class OptimizedEEGNetTrainer:
         self.label_smoothing_factor = label_smoothing_factor
         self.use_attention = use_attention
 
-        # Device bestimmen
+        # Device-Auswahl mit automatischer GPU-Erkennung
         if device == "auto":
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
         else:
             self.device = device
 
         print(f"Using device: {self.device}")
+        if self.device == "cuda":
+            print(f"GPU: {torch.cuda.get_device_name()}")
+            print(f"CUDA Memory: {torch.cuda.get_device_properties(0).total_memory // 1e9:.1f} GB")
 
-        # Model parameter für optimierte Architektur
+        # Model-Parameter für Architektur-Erstellung
         self.model_params = {
             "n_chans": n_chans,
             "n_outputs": n_outputs,
@@ -344,16 +636,18 @@ class OptimizedEEGNetTrainer:
             "drop_prob": drop_prob,
         }
 
-        # Training-Objekte
-        self.model = None
-        self.clf = None
-        self.label_encoder = LabelEncoder()
-        self.preprocessor = AdvancedEEGPreprocessor()
+        # Training-Objekte (werden später initialisiert)
+        self.model = None                           # Das neuronale Netz
+        self.clf = None                            # Skorch-Wrapper für Training
+        self.label_encoder = LabelEncoder()        # Konvertiert Labels zu Integer
+        self.preprocessor = AdvancedEEGPreprocessor()  # EEG-spezifische Präprozessierung
+        
+        # Klassen-Namen für bessere Interpretation
         self.class_names = ["n-back 1", "n-back 2", "n-back 3"]
 
-        # Performance tracking
-        self.training_history = []
-        self.cv_scores = []
+        # Performance-Tracking für Analyse
+        self.training_history = []              # Training-Verlauf
+        self.cv_scores = []                    # Cross-Validation Ergebnisse
 
     def load_and_preprocess_epochs(self, fif_path: Path) -> mne.Epochs:
         """Lädt und präprozessiert EEG-Epochen mit erweiterten Methoden."""
