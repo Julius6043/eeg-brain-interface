@@ -7,9 +7,10 @@ from braindecode.datasets import create_from_mne_epochs
 from braindecode.models import EEGNet
 from sklearn.model_selection import GroupKFold
 import numpy as np
-from skorch.callbacks import LRScheduler
+from skorch.callbacks import LRScheduler, EarlyStopping
 from skorch.helper import predefined_split
 import torch
+from sklearn.metrics import confusion_matrix, classification_report, f1_score
 
 # MNE Verbose-Level setzen um die vielen Meldungen zu reduzieren
 mne.set_log_level('ERROR')
@@ -112,6 +113,18 @@ def normalize_epochs_with_baseline(task_epochs, baseline_epochs):
 
 
 def train_eegnet_with_cv():
+    config = {
+        "n_splits": 3,
+        "lr": 0.001,
+        "batch_size": 32,
+        "max_epochs": 100,
+        "early_stopping_patience": 15,
+        "kernel_length": 64,
+        "F1": 8,
+        "D": 2,
+        "F2": 16
+    }
+
     epochs, baseline_epochs = load_and_prepare_data()
     epochs = normalize_epochs_with_baseline(epochs, baseline_epochs)
     epochs = add_metadata_with_targets(epochs)
@@ -133,8 +146,7 @@ def train_eegnet_with_cv():
     print(f"Anzahl Klassen: {n_classes}")
     print(f"Anzahl Kanäle: {n_chans}")
 
-    n_splits = 3
-
+    n_splits = config["n_splits"]
     epoch_indices = np.arange(len(epochs))
     groups = np.floor(epoch_indices / (len(epochs) / n_splits)).astype(int)
 
@@ -144,7 +156,7 @@ def train_eegnet_with_cv():
 
     gkf = GroupKFold(n_splits=n_splits)
 
-    all_fold_accuracies = []
+    all_fold_accuracies, all_fold_f1_scores = [], []
 
     for fold, (train_idx, test_idx) in enumerate(gkf.split(X=epochs, y=epochs.metadata['target'], groups=groups)):
         print(f"\n--- Starte Fold {fold + 1}/{n_splits} ---")
@@ -156,10 +168,10 @@ def train_eegnet_with_cv():
             n_outputs=n_classes,
             final_conv_length='auto',
             pool_mode='mean',
-            kernel_length=32,
-            F1=16,
-            D=4,
-            F2=64,
+            kernel_length=config['kernel_length'],
+            F1=config['F1'],
+            D=config['D'],
+            F2=config['F2'],
         )
 
         train_epochs = epochs[train_idx]
@@ -189,15 +201,16 @@ def train_eegnet_with_cv():
             model,
             criterion=torch.nn.CrossEntropyLoss,
             optimizer=torch.optim.AdamW,
-            optimizer__lr=0.01,
+            optimizer__lr=config["lr"],
             # optimizer__weight_decay=0.01,
-            batch_size=64,
-            max_epochs=100,
+            batch_size=config["batch_size"],
+            max_epochs=config["max_epochs"],
             train_split=predefined_split(test_dataset),
             device=device,
             classes=[0, 1, 2],
             callbacks=[
-                ("lr_scheduler", LRScheduler('CosineAnnealingLR', T_max=100 - 1)),
+                ("lr_scheduler", LRScheduler('CosineAnnealingLR', T_max=config["max_epochs"] - 1)),
+                ("early_stopping", EarlyStopping(patience=config["early_stopping_patience"], monitor="valid_acc_best"))
             ],
             verbose=1,
         )
@@ -205,10 +218,21 @@ def train_eegnet_with_cv():
         print("Starte Training für diesen Fold...")
         clf.fit(train_dataset, y=None)
 
-        # Genauigkeit für diesen Fold speichern
+        y_true = [y for x, y, i in test_dataset]
+        y_pred = clf.predict(test_dataset)
+
+        print(f"Training beendet nach {len(clf.history)} Epochen.")
+        print("\nKonfusionsmatrix:")
+        print(confusion_matrix(y_true, y_pred))
+        print("\nClassification Report:")
+        print(classification_report(y_true, y_pred, target_names=['1-back', '2-back', '3-back']))
+
         valid_acc = clf.history[-1, 'valid_acc']
+        valid_f1 = f1_score(y_true, y_pred, average='macro')
+
         all_fold_accuracies.append(valid_acc)
-        print(f"Fold {fold + 1} - Validation Accuracy: {valid_acc:.4f}")
+        all_fold_f1_scores.append(valid_f1)
+        print(f"Fold {fold + 1} - Validation Accuracy: {valid_acc:.4f}, F1-Score: {valid_f1:.4f}")
 
     # --- 3. Ergebnisse zusammenfassen ---
     mean_accuracy = np.mean(all_fold_accuracies)
