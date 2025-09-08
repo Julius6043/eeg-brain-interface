@@ -88,18 +88,20 @@ def add_metadata_with_targets(epochs):
     return epochs_with_meta
 
 
-def normalize_epochs_with_baseline(task_epochs, baseline_epochs):
-    print("\nNormalisiere Daten anhand der Baseline mit RobustScaler...")
+def normalize_epochs_with_baseline(task_epochs, baseline_epochs, config=None):
+    print("\nNormalisiere Daten anhand der Baseline mit erweiterten Filtern...")
 
     baseline_data = baseline_epochs.get_data(
         copy=False
     )  # Shape: (n_epochs, n_chans, n_times)
 
     # 1. Band-pass Filter für bessere Signal-Rausch-Verhältnis
-    # Fokus auf relevante EEG-Frequenzbänder (4-30 Hz)
     # task_epochs_filtered = task_epochs.copy()
-    # task_epochs_filtered.filter(l_freq=4.0, h_freq=30.0, fir_design="firwin")
-    # filtered_data = task_epochs_filtered.get_data(copy=True)
+    # task_epochs_filtered.filter(l_freq=filter_low, h_freq=filter_high, fir_design="firwin")
+    
+    # 2. Notch Filter bei 50Hz für Netzstörungen (falls vorhanden)
+    # task_epochs_filtered.notch_filter(freqs=[50], fir_design="firwin", verbose=False)
+    
     filtered_data = task_epochs.get_data(copy=True)
 
     # 2. RobustScaler für robuste Normalisierung (weniger sensitiv zu Outliers)
@@ -136,9 +138,9 @@ def normalize_epochs_with_baseline(task_epochs, baseline_epochs):
 
 def augment_eeg_data(epochs, augment_factor=2):
     """
-    Erweitert EEG-Daten durch einfache Augmentation-Techniken.
+    Erweiterte EEG-Daten Augmentation mit mehreren Techniken.
     """
-    print(f"\nAugmentiere Daten mit Faktor {augment_factor}...")
+    print(f"\nAugmentiere Daten mit Faktor {augment_factor} (erweiterte Methoden)...")
 
     original_data = epochs.get_data()
     original_events = epochs.events
@@ -149,11 +151,29 @@ def augment_eeg_data(epochs, augment_factor=2):
     augmented_metadata_list = [original_metadata]
 
     for aug_idx in range(augment_factor - 1):
-        # Noise Augmentation: Füge leichtes Rauschen hinzu
-        noise_level = 0.05  # 5% Rauschen
-        augmented_data = original_data + np.random.normal(
-            0, noise_level, original_data.shape
-        )
+        augmented_data = original_data.copy()
+        
+        # 1. Gaussian Noise (bewährt)
+        noise_level = 0.03  # Reduziert für weniger Störung
+        augmented_data += np.random.normal(0, noise_level, original_data.shape)
+        
+        # 2. Time Jittering - leichte zeitliche Verschiebung
+        max_shift = 5  # Max 5 Samples Verschiebung
+        for epoch_idx in range(len(augmented_data)):
+            shift = np.random.randint(-max_shift, max_shift)
+            if shift != 0:
+                augmented_data[epoch_idx] = np.roll(augmented_data[epoch_idx], shift, axis=1)
+        
+        # 3. Amplitude Scaling pro Kanal
+        for epoch_idx in range(len(augmented_data)):
+            for ch_idx in range(augmented_data.shape[1]):
+                scale_factor = np.random.uniform(0.9, 1.1)  # 10% Amplitude Varianz
+                augmented_data[epoch_idx, ch_idx] *= scale_factor
+        
+        # 4. Channel Dropout (zufällig einzelne Kanäle nullsetzen)
+        if np.random.random() < 0.1:  # 10% Chance
+            dropout_ch = np.random.randint(0, augmented_data.shape[1])
+            augmented_data[:, dropout_ch] *= 0.1  # Stark reduzieren statt nullsetzen
 
         # Events und Metadata kopieren
         augmented_events = original_events.copy()
@@ -276,16 +296,20 @@ def get_model(model_name, n_chans, n_classes, epoch_length_s, sfreq, config):
 def train_eegnet_with_cv():
     config = {
         "model_name": "ShallowFBCSPNet",  # 'EEGNet', 'ShallowFBCSPNet', 'Deep4Net'
-        "n_splits": 3,
-        "lr": 0.001,
-        "batch_size": 32,
-        "max_epochs": 150, 
+        "n_splits": 5,  # Mehr Folds für robustere CV
+        "lr": 0.0005,  # Reduzierte Learning Rate für stabileres Training
+        "batch_size": 16,  # Kleinere Batch Size für bessere Generalisierung
+        "max_epochs": 200,  # Mehr Epochen für bessere Konvergenz
         "kernel_length": 64,
         "F1": 16,
         "D": 4,
         "F2": 32,
-        "dropout_rate": 0.25,
-        "weight_decay": 0.001,
+        "dropout_rate": 0.4,  # Erhöhter Dropout gegen Overfitting
+        "weight_decay": 0.005,  # Stärkere Regularisierung
+        "patience": 20,  # Early stopping patience
+        "augmentation_factor": 3,  # Mehr Datenaugmentation
+        "filter_low": 1.0,  # Erweiterte Filterung für bessere Features
+        "filter_high": 40.0,
     }
 
     epochs, baseline_epochs = load_and_prepare_data()
