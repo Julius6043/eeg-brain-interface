@@ -394,10 +394,10 @@ class OptimizedEEGNetTrainer:
             task_data[:, ch, :] -= mean_baseline[ch]
 
         # 2. Artefakt-Entfernung
-        task_data = self.preprocessor.remove_artifacts(task_data)
+        # task_data = self.preprocessor.remove_artifacts(task_data)
 
         # 3. Spektrale Normalisierung
-        task_data = self.preprocessor.apply_spectral_normalization(task_data)
+        # task_data = self.preprocessor.apply_spectral_normalization(task_data)
 
         # 4. Robuste Z-Score Normalisierung pro Kanal
         for ch in range(task_data.shape[1]):
@@ -827,7 +827,7 @@ if __name__ == "__main__":
 
     base_dir = Path(__file__).parent.parent.parent.parent
     epochs_path = (
-        base_dir / "results" / "processed" / "Aliaa" / "indoor_processed-epo.fif"
+        base_dir / "results" / "processed" / "Rami" / "outdoor_processed-epo.fif"
     )
     output_dir = base_dir / "results" / "models_optimized"
 
@@ -835,8 +835,8 @@ if __name__ == "__main__":
         results = train_optimized_eegnet(
             epochs_path=epochs_path,
             output_dir=output_dir,
-            participant_name="Aliaa",
-            session_name="indoor",
+            participant_name="Rami",
+            session_name="outdoor",
             use_cross_validation=True,
         )
 
