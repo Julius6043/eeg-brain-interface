@@ -4,10 +4,10 @@ from pathlib import Path
 
 from braindecode import EEGClassifier
 from braindecode.datasets import create_from_mne_epochs
-from braindecode.models import EEGNet, ShallowFBCSPNet, Deep4Net
+from braindecode.models import EEGNet, ShallowFBCSPNet, Deep4Net, EEGNetv4, ATCNet, AttentionBaseNet
 
 from sklearn.model_selection import StratifiedKFold
-from sklearn.preprocessing import RobustScaler, StandardScaler
+from sklearn.preprocessing import RobustScaler
 import numpy as np
 from skorch.callbacks import LRScheduler
 from skorch.helper import predefined_split
@@ -15,6 +15,7 @@ import torch
 from sklearn.metrics import confusion_matrix, classification_report, f1_score
 
 mne.set_log_level("ERROR")
+
 
 
 def load_and_prepare_data():
@@ -110,7 +111,7 @@ def normalize_epochs_with_baseline(task_epochs, baseline_epochs, config=None):
     filtered_reshaped = filtered_data.transpose(1, 0, 2).reshape(filtered_data.shape[1], -1).T
     
     # RobustScaler auf Baseline-Daten fitten
-    scaler = StandardScaler()
+    scaler = RobustScaler()
     scaler.fit(baseline_reshaped)
     
     # Normalisierung auf gefilterte Task-Daten anwenden
@@ -289,31 +290,47 @@ def get_model(model_name, n_chans, n_classes, epoch_length_s, sfreq, config):
             drop_prob=config["dropout_rate"]
         )
     
+    elif model_name == "ATCNet":
+        return ATCNet(
+            n_chans=n_chans,
+            n_outputs=n_classes,
+            input_window_seconds=epoch_length_s,
+            sfreq=sfreq
+        )
+    
+    elif model_name == "AttentionBaseNet":
+        return AttentionBaseNet(
+            n_chans=n_chans,
+            n_outputs=n_classes,
+            input_window_seconds=epoch_length_s,
+            sfreq=sfreq
+        )
+    
     else:
-        raise ValueError(f"Unbekanntes Modell: {model_name}")
+        raise ValueError(f"Unbekanntes Modell: {model_name}. Verfügbar: EEGNet, ShallowFBCSPNet, Deep4Net, ATCNet, EEGNetv4")
 
 
 def train_eegnet_with_cv():
     config = {
-        "model_name": "ShallowFBCSPNet",  # 'EEGNet', 'ShallowFBCSPNet', 'Deep4Net'
-        "n_splits": 5,  # Mehr Folds für robustere CV
-        "lr": 0.0005,  # Reduzierte Learning Rate für stabileres Training
-        "batch_size": 16,  # Kleinere Batch Size für bessere Generalisierung
-        "max_epochs": 200,  # Mehr Epochen für bessere Konvergenz
+        "model_name": "AttentionBaseNet",  # 'EEGNet', 'ShallowFBCSPNet', 'Deep4Net', 'ATCNet', 'EEGNetv4'
+        "n_splits": 3,  # Zurück zu 3 für schnellere Tests
+        "lr": 0.001,  # Standard Learning Rate für ATCNet
+        "batch_size": 16,  # Kleinere Batch Size für Attention-Modelle
+        "max_epochs": 100,  # Weniger Epochen da ATCNet schneller konvergiert
         "kernel_length": 64,
         "F1": 16,
         "D": 4,
         "F2": 32,
-        "dropout_rate": 0.4,  # Erhöhter Dropout gegen Overfitting
-        "weight_decay": 0.005,  # Stärkere Regularisierung
+        "dropout_rate": 0.3,  # Etwas höherer Dropout für komplexere Modelle
+        "weight_decay": 0.001,
         "patience": 20,  # Early stopping patience
-        "augmentation_factor": 3,  # Mehr Datenaugmentation
+        "augmentation_factor": 2,  # Moderate Augmentation
         "filter_low": 1.0,  # Erweiterte Filterung für bessere Features
         "filter_high": 40.0,
     }
 
     epochs, baseline_epochs = load_and_prepare_data()
-    epochs = normalize_epochs_with_baseline(epochs, baseline_epochs)
+    epochs = normalize_epochs_with_baseline(epochs, baseline_epochs, config)
     epochs = add_metadata_with_targets(epochs)
 
     sfreq = epochs.info["sfreq"]
