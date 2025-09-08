@@ -4,28 +4,31 @@ from pathlib import Path
 
 from braindecode import EEGClassifier
 from braindecode.datasets import create_from_mne_epochs
-from braindecode.models import EEGNet
-from sklearn.model_selection import GroupKFold
+from braindecode.models import EEGNet, ShallowFBCSPNet, Deep4Net
+
+from sklearn.model_selection import StratifiedKFold
+from sklearn.preprocessing import RobustScaler, StandardScaler
 import numpy as np
-from skorch.callbacks import LRScheduler, EarlyStopping
+from skorch.callbacks import LRScheduler
 from skorch.helper import predefined_split
 import torch
 from sklearn.metrics import confusion_matrix, classification_report, f1_score
 
-# MNE Verbose-Level setzen um die vielen Meldungen zu reduzieren
-mne.set_log_level('ERROR')
+mne.set_log_level("ERROR")
 
 
 def load_and_prepare_data():
     base_dir = Path(__file__).parent.parent.parent.parent
-    epochs_path = base_dir / "results" / "processed" / "Aliaa" / "indoor_processed-epo.fif"
+    epochs_path = (
+        base_dir / "results" / "processed" / "Aliaa" / "indoor_processed-epo.fif"
+    )
 
     if not epochs_path.exists():
         raise FileNotFoundError(f"Epochs file not found: {epochs_path}")
 
     epochs = mne.read_epochs(str(epochs_path), preload=True, verbose=False)
 
-    baseline_condition_name = 'baseline'
+    baseline_condition_name = "baseline"
 
     if baseline_condition_name not in epochs.event_id:
         raise ValueError(
@@ -44,7 +47,7 @@ def load_and_prepare_data():
 
 
 def add_metadata_with_targets(epochs):
-    target_map = {'1-back': 0, '2-back': 1, '3-back': 2}
+    target_map = {"1-back": 0, "2-back": 1, "3-back": 2}
 
     try:
         event_mapping = {
@@ -61,7 +64,9 @@ def add_metadata_with_targets(epochs):
     epochs_with_meta = epochs.copy()
 
     try:
-        targets = [event_mapping[event_id] for event_id in epochs_with_meta.events[:, 2]]
+        targets = [
+            event_mapping[event_id] for event_id in epochs_with_meta.events[:, 2]
+        ]
     except KeyError as e:
         raise RuntimeError(
             f"Event-ID '{e.args[0]}' aus den Daten konnte nicht im Mapping gefunden werden. "
@@ -71,7 +76,7 @@ def add_metadata_with_targets(epochs):
     for i, original_event_id in enumerate(epochs_with_meta.events[:, 2]):
         epochs_with_meta.events[i, 2] = event_mapping[original_event_id]
 
-    epochs_with_meta.metadata = pd.DataFrame({'target': targets})
+    epochs_with_meta.metadata = pd.DataFrame({"target": targets})
     epochs_with_meta.event_id = target_map
 
     print("\nMetadaten mit 'target'-Spalte erfolgreich hinzugefügt.")
@@ -84,54 +89,212 @@ def add_metadata_with_targets(epochs):
 
 
 def normalize_epochs_with_baseline(task_epochs, baseline_epochs):
-    print("\nNormalisiere Daten anhand der Baseline...")
+    print("\nNormalisiere Daten anhand der Baseline mit RobustScaler...")
 
-    baseline_data = baseline_epochs.get_data(copy=False)  # Shape: (n_epochs, n_chans, n_times)
+    baseline_data = baseline_epochs.get_data(
+        copy=False
+    )  # Shape: (n_epochs, n_chans, n_times)
 
-    # Berechne Mittelwert und Std über Epochen und Zeit für jeden Kanal
-    mean_per_channel = baseline_data.mean(axis=(0, 2), keepdims=True)
-    std_per_channel = baseline_data.std(axis=(0, 2), keepdims=True)
+    # 1. Band-pass Filter für bessere Signal-Rausch-Verhältnis
+    # Fokus auf relevante EEG-Frequenzbänder (4-30 Hz)
+    # task_epochs_filtered = task_epochs.copy()
+    # task_epochs_filtered.filter(l_freq=4.0, h_freq=30.0, fir_design="firwin")
+    # filtered_data = task_epochs_filtered.get_data(copy=True)
+    filtered_data = task_epochs.get_data(copy=True)
 
-    # Division durch Null vermeiden, falls ein Kanal flatt ist
-    std_per_channel[std_per_channel == 0] = 1
+    # 2. RobustScaler für robuste Normalisierung (weniger sensitiv zu Outliers)
+    # Reshape für sklearn: (samples, features) = (n_epochs * n_times, n_channels)
+    baseline_reshaped = baseline_data.transpose(1, 0, 2).reshape(baseline_data.shape[1], -1).T
+    filtered_reshaped = filtered_data.transpose(1, 0, 2).reshape(filtered_data.shape[1], -1).T
+    
+    # RobustScaler auf Baseline-Daten fitten
+    scaler = StandardScaler()
+    scaler.fit(baseline_reshaped)
+    
+    # Normalisierung auf gefilterte Task-Daten anwenden
+    normalized_reshaped = scaler.transform(filtered_reshaped)
+    
+    # Zurück in ursprüngliche Form bringen: (n_epochs, n_channels, n_times)
+    normalized_filtered_data = normalized_reshaped.T.reshape(
+        filtered_data.shape[1], filtered_data.shape[0], filtered_data.shape[2]
+    ).transpose(1, 0, 2)
 
-    # 2. Aufgaben-Daten holen
-    task_data = task_epochs.get_data(copy=True)
+    # 3. Ein neues MNE Epochs-Objekt mit den normalisierten und gefilterten Daten erstellen
+    normalized_epochs = mne.EpochsArray(
+        normalized_filtered_data,
+        task_epochs.info,
+        events=task_epochs.events,
+        tmin=task_epochs.tmin,
+        event_id=task_epochs.event_id,
+        metadata=task_epochs.metadata,
+        verbose=False,
+    )
 
-    # 3. Z-Score Normalisierung anwenden (nutzt NumPy Broadcasting)
-    normalized_task_data = (task_data - mean_per_channel) / std_per_channel
-
-    # 4. Ein neues MNE Epochs-Objekt mit den normalisierten Daten erstellen
-    normalized_epochs = mne.EpochsArray(normalized_task_data, task_epochs.info,
-                                        events=task_epochs.events, tmin=task_epochs.tmin,
-                                        event_id=task_epochs.event_id,
-                                        metadata=task_epochs.metadata,
-                                        verbose=False)
-
-    print("Normalisierung abgeschlossen.")
+    print("Normalisierung und Filterung abgeschlossen.")
     return normalized_epochs
+
+
+def augment_eeg_data(epochs, augment_factor=2):
+    """
+    Erweitert EEG-Daten durch einfache Augmentation-Techniken.
+    """
+    print(f"\nAugmentiere Daten mit Faktor {augment_factor}...")
+
+    original_data = epochs.get_data()
+    original_events = epochs.events
+    original_metadata = epochs.metadata
+
+    augmented_data_list = [original_data]
+    augmented_events_list = [original_events]
+    augmented_metadata_list = [original_metadata]
+
+    for aug_idx in range(augment_factor - 1):
+        # Noise Augmentation: Füge leichtes Rauschen hinzu
+        noise_level = 0.05  # 5% Rauschen
+        augmented_data = original_data + np.random.normal(
+            0, noise_level, original_data.shape
+        )
+
+        # Events und Metadata kopieren
+        augmented_events = original_events.copy()
+        # Event-Zeiten leicht verschieben für Realismus
+        augmented_events[:, 0] += len(original_data) * (aug_idx + 1)
+
+        augmented_metadata = original_metadata.copy()
+
+        augmented_data_list.append(augmented_data)
+        augmented_events_list.append(augmented_events)
+        augmented_metadata_list.append(augmented_metadata)
+
+    # Kombiniere alle augmentierten Daten
+    combined_data = np.concatenate(augmented_data_list, axis=0)
+    combined_events = np.concatenate(augmented_events_list, axis=0)
+    combined_metadata = pd.concat(augmented_metadata_list, ignore_index=True)
+
+    # Erstelle neue Epochs mit augmentierten Daten
+    augmented_epochs = mne.EpochsArray(
+        combined_data,
+        epochs.info,
+        events=combined_events,
+        tmin=epochs.tmin,
+        event_id=epochs.event_id,
+        metadata=combined_metadata,
+        verbose=False,
+    )
+
+    print(f"Daten augmentiert: {len(epochs)} → {len(augmented_epochs)} Epochen")
+    return augmented_epochs
+
+
+def create_cv_splits(epochs, n_splits):
+    """
+    Erstellt einfache StratifiedKFold Cross-Validation Splits.
+
+    Args:
+        epochs: MNE Epochs Objekt
+        n_splits: Anzahl der Splits
+
+    Returns:
+        cv_splitter: StratifiedKFold Splitter
+    """
+    targets = epochs.metadata["target"].values
+
+    print(
+        f"\nVerwende StratifiedKFold mit {n_splits} Splits (shuffle=True, random_state=42)"
+    )
+
+    # Zeige Klassenverteilung
+    unique_targets, target_counts = np.unique(targets, return_counts=True)
+    print("Gesamte Klassenverteilung:")
+    for target, count in zip(unique_targets, target_counts):
+        print(f"  Klasse {target}: {count} Epochen ({count / len(targets) * 100:.1f}%)")
+
+    cv_splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+    return cv_splitter
+
+
+def get_model(model_name, n_chans, n_classes, epoch_length_s, sfreq, config):
+    """
+    Erstellt verschiedene Braindecode-Modelle basierend auf dem Namen.
+    
+    Args:
+        model_name: Name des Modells ('EEGNet', 'ShallowFBCSPNet', 'Deep4Net')
+        n_chans: Anzahl EEG-Kanäle
+        n_classes: Anzahl Klassen
+        epoch_length_s: Epochenlänge in Sekunden
+        sfreq: Sampling-Frequenz
+        config: Konfigurationsdictionary
+    
+    Returns:
+        model: Initialisiertes Braindecode-Modell
+    """
+    
+    if model_name == "EEGNet":
+        return EEGNet(
+            input_window_seconds=epoch_length_s,
+            sfreq=sfreq,
+            n_chans=n_chans,
+            n_outputs=n_classes,
+            final_conv_length="auto",
+            pool_mode="mean",
+            kernel_length=config["kernel_length"],
+            F1=config["F1"],
+            D=config["D"],
+            F2=config["F2"],
+            drop_prob=config["dropout_rate"],
+        )
+    
+    elif model_name == "ShallowFBCSPNet":
+        return ShallowFBCSPNet(
+            n_chans=n_chans,
+            n_outputs=n_classes,
+            input_window_seconds=epoch_length_s,
+            sfreq=sfreq,
+            n_filters_time=40,
+            n_filters_spat=40,
+            final_conv_length='auto',
+            drop_prob=config["dropout_rate"]
+        )
+    
+    elif model_name == "Deep4Net":
+        return Deep4Net(
+            n_chans=n_chans,
+            n_outputs=n_classes,
+            input_window_seconds=epoch_length_s,
+            sfreq=sfreq,
+            n_filters_time=25,
+            n_filters_spat=25,
+            final_conv_length='auto',
+            # pool_mode='max',
+            drop_prob=config["dropout_rate"]
+        )
+    
+    else:
+        raise ValueError(f"Unbekanntes Modell: {model_name}")
 
 
 def train_eegnet_with_cv():
     config = {
+        "model_name": "ShallowFBCSPNet",  # 'EEGNet', 'ShallowFBCSPNet', 'Deep4Net'
         "n_splits": 3,
         "lr": 0.001,
         "batch_size": 32,
-        "max_epochs": 100,
-        "early_stopping_patience": 15,
+        "max_epochs": 150, 
         "kernel_length": 64,
-        "F1": 8,
-        "D": 2,
-        "F2": 16
+        "F1": 16,
+        "D": 4,
+        "F2": 32,
+        "dropout_rate": 0.25,
+        "weight_decay": 0.001,
     }
 
     epochs, baseline_epochs = load_and_prepare_data()
     epochs = normalize_epochs_with_baseline(epochs, baseline_epochs)
     epochs = add_metadata_with_targets(epochs)
 
-    sfreq = epochs.info['sfreq']
+    sfreq = epochs.info["sfreq"]
 
-    epoch_length_s = (epochs.times[-1] - epochs.times[0])
+    epoch_length_s = epochs.times[-1] - epochs.times[0]
     window_size_samples = len(epochs.times)
 
     window_stride_samples = window_size_samples
@@ -139,78 +302,98 @@ def train_eegnet_with_cv():
     print(f"Epochenlänge: {epoch_length_s:.2f}s ({window_size_samples} samples)")
     print(f"Sampling frequency: {sfreq}Hz")
 
-    n_chans = epochs.info['nchan']
+    n_chans = epochs.info["nchan"]
     n_classes = len(epochs.event_id)
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"\nVerwende Gerät: {device}")
     print(f"Anzahl Klassen: {n_classes}")
     print(f"Anzahl Kanäle: {n_chans}")
 
     n_splits = config["n_splits"]
-    epoch_indices = np.arange(len(epochs))
-    groups = np.floor(epoch_indices / (len(epochs) / n_splits)).astype(int)
 
-    groups[groups >= n_splits] = n_splits - 1
-
-    print(f"\n{len(epochs)} Epochen in {n_splits} chronologische Blöcke für die Kreuzvalidierung aufgeteilt.")
-
-    gkf = GroupKFold(n_splits=n_splits)
+    # Erstelle einfache StratifiedKFold Splits
+    cv_splitter = create_cv_splits(epochs, n_splits)
 
     all_fold_accuracies, all_fold_f1_scores = [], []
 
-    for fold, (train_idx, test_idx) in enumerate(gkf.split(X=epochs, y=epochs.metadata['target'], groups=groups)):
+    # Cross-validation durchführen
+    for fold, (train_idx, test_idx) in enumerate(
+        cv_splitter.split(X=epochs.get_data(), y=epochs.metadata["target"])
+    ):
         print(f"\n--- Starte Fold {fold + 1}/{n_splits} ---")
 
-        model = EEGNet(
-            input_window_seconds=epoch_length_s,
-            sfreq=sfreq,
+        model = get_model(
+            model_name=config["model_name"],
             n_chans=n_chans,
-            n_outputs=n_classes,
-            final_conv_length='auto',
-            pool_mode='mean',
-            kernel_length=config['kernel_length'],
-            F1=config['F1'],
-            D=config['D'],
-            F2=config['F2'],
+            n_classes=n_classes,
+            epoch_length_s=epoch_length_s,
+            sfreq=sfreq,
+            config=config,
         )
 
         train_epochs = epochs[train_idx]
         test_epochs = epochs[test_idx]
 
-        print(f"Train/Test Split: {len(train_epochs)}/{len(test_epochs)} Epochen")
+        # Data Augmentation nur für Training Set
+        train_epochs_augmented = augment_eeg_data(train_epochs, augment_factor=2)
+
+        print(
+            f"Train/Test Split: {len(train_epochs_augmented)}/{len(test_epochs)} Epochen (nach Augmentation)"
+        )
 
         # Erstelle Datasets mit korrigiertem Windowing
         train_dataset = create_from_mne_epochs(
-            [train_epochs],
+            [train_epochs_augmented],
             window_size_samples=window_size_samples,
             window_stride_samples=window_stride_samples,
-            drop_last_window=False
+            drop_last_window=False,
         )
 
         test_dataset = create_from_mne_epochs(
             [test_epochs],
             window_size_samples=window_size_samples,
             window_stride_samples=window_stride_samples,
-            drop_last_window=False
+            drop_last_window=False,
         )
 
-        print(f"Trainingsdaten: {len(train_epochs)} Epochen -> {len(train_dataset)} Fenster")
-        print(f"Testdaten:      {len(test_epochs)} Epochen -> {len(test_dataset)} Fenster")
+        print(
+            f"Trainingsdaten: {len(train_epochs_augmented)} Epochen -> {len(train_dataset)} Fenster"
+        )
+        print(
+            f"Testdaten:      {len(test_epochs)} Epochen -> {len(test_dataset)} Fenster"
+        )
+
+        # Berechne Klassengewichte für unbalancierte Daten
+        from sklearn.utils.class_weight import compute_class_weight
+
+        unique_targets = np.unique(epochs.metadata["target"])
+        class_weights = compute_class_weight(
+            "balanced", classes=unique_targets, y=epochs.metadata["target"]
+        )
+        class_weight_dict = dict(zip(unique_targets, class_weights))
+        print(f"Klassengewichte: {class_weight_dict}")
 
         clf = EEGClassifier(
             model,
             criterion=torch.nn.CrossEntropyLoss,
+            criterion__weight=torch.FloatTensor(
+                [class_weights[i] for i in range(len(class_weights))]
+            ),
+            criterion__label_smoothing=0.1,  # Label Smoothing für bessere Generalisierung
             optimizer=torch.optim.AdamW,
             optimizer__lr=config["lr"],
-            # optimizer__weight_decay=0.01,
+            optimizer__weight_decay=config["weight_decay"],
+            optimizer__betas=(0.9, 0.999),  # Optimierte Adam Parameter
             batch_size=config["batch_size"],
             max_epochs=config["max_epochs"],
             train_split=predefined_split(test_dataset),
             device=device,
             classes=[0, 1, 2],
             callbacks=[
-                ("lr_scheduler", LRScheduler('CosineAnnealingLR', T_max=config["max_epochs"] - 1)),
-                ("early_stopping", EarlyStopping(patience=config["early_stopping_patience"], monitor="valid_acc_best"))
+                (
+                    "lr_scheduler",
+                    LRScheduler("CosineAnnealingLR", T_max=config["max_epochs"] - 1),
+                ),
             ],
             verbose=1,
         )
@@ -221,25 +404,45 @@ def train_eegnet_with_cv():
         y_true = [y for x, y, i in test_dataset]
         y_pred = clf.predict(test_dataset)
 
+        # Analysiere Vorhersageverteilung
+        pred_unique, pred_counts = np.unique(y_pred, return_counts=True)
+        true_unique, true_counts = np.unique(y_true, return_counts=True)
+
         print(f"Training beendet nach {len(clf.history)} Epochen.")
+        print(
+            f"\nTest-Set Klassenverteilung (Ground Truth): {dict(zip(true_unique, true_counts))}"
+        )
+        print(f"Vorhergesagte Klassenverteilung: {dict(zip(pred_unique, pred_counts))}")
+
         print("\nKonfusionsmatrix:")
         print(confusion_matrix(y_true, y_pred))
         print("\nClassification Report:")
-        print(classification_report(y_true, y_pred, target_names=['1-back', '2-back', '3-back']))
+        print(
+            classification_report(
+                y_true,
+                y_pred,
+                target_names=["1-back", "2-back", "3-back"],
+                zero_division=0,
+            )
+        )
 
-        valid_acc = clf.history[-1, 'valid_acc']
-        valid_f1 = f1_score(y_true, y_pred, average='macro')
+        valid_acc = clf.history[-1, "valid_acc"]
+        valid_f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
 
         all_fold_accuracies.append(valid_acc)
         all_fold_f1_scores.append(valid_f1)
-        print(f"Fold {fold + 1} - Validation Accuracy: {valid_acc:.4f}, F1-Score: {valid_f1:.4f}")
+        print(
+            f"Fold {fold + 1} - Validation Accuracy: {valid_acc:.4f}, F1-Score: {valid_f1:.4f}"
+        )
 
     # --- 3. Ergebnisse zusammenfassen ---
     mean_accuracy = np.mean(all_fold_accuracies)
     std_accuracy = np.std(all_fold_accuracies)
 
     print("\n\n--- Kreuzvalidierung abgeschlossen ---")
-    print(f"Genauigkeiten der einzelnen Folds: {[f'{acc:.4f}' for acc in all_fold_accuracies]}")
+    print(
+        f"Genauigkeiten der einzelnen Folds: {[f'{acc:.4f}' for acc in all_fold_accuracies]}"
+    )
     print(f"Durchschnittliche Genauigkeit: {mean_accuracy:.4f}")
     print(f"Standardabweichung der Genauigkeit: {std_accuracy:.4f}")
 
