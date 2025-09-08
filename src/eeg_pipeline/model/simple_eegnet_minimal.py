@@ -11,9 +11,12 @@ from skorch.callbacks import LRScheduler
 from skorch.helper import predefined_split
 import torch
 
+# MNE Verbose-Level setzen um die vielen Meldungen zu reduzieren
+mne.set_log_level('ERROR')
+
 
 def load_and_prepare_data():
-    base_dir = Path(__file__).parent
+    base_dir = Path(__file__).parent.parent.parent.parent
     epochs_path = base_dir / "results" / "processed" / "Aliaa" / "indoor_processed-epo.fif"
 
     if not epochs_path.exists():
@@ -88,7 +91,7 @@ def normalize_epochs_with_baseline(task_epochs, baseline_epochs):
     mean_per_channel = baseline_data.mean(axis=(0, 2), keepdims=True)
     std_per_channel = baseline_data.std(axis=(0, 2), keepdims=True)
 
-    # Division durch Null vermeiden, falls ein Kanal flach ist
+    # Division durch Null vermeiden, falls ein Kanal flatt ist
     std_per_channel[std_per_channel == 0] = 1
 
     # 2. Aufgaben-Daten holen
@@ -101,7 +104,8 @@ def normalize_epochs_with_baseline(task_epochs, baseline_epochs):
     normalized_epochs = mne.EpochsArray(normalized_task_data, task_epochs.info,
                                         events=task_epochs.events, tmin=task_epochs.tmin,
                                         event_id=task_epochs.event_id,
-                                        metadata=task_epochs.metadata)  # Metadaten direkt mitübernehmen
+                                        metadata=task_epochs.metadata,
+                                        verbose=False)
 
     print("Normalisierung abgeschlossen.")
     return normalized_epochs
@@ -112,22 +116,24 @@ def train_eegnet_with_cv():
     epochs = normalize_epochs_with_baseline(epochs, baseline_epochs)
     epochs = add_metadata_with_targets(epochs)
 
-    # --- Setup für Windowing (Fenstererstellung) ---
     sfreq = epochs.info['sfreq']
-    window_size_s = 4.0
-    overlap_s = 2.0
-    window_stride_s = window_size_s - overlap_s
-    window_size_samples = int(window_size_s * sfreq)
-    window_stride_samples = int(window_stride_s * sfreq)
+
+    epoch_length_s = (epochs.times[-1] - epochs.times[0])
+    window_size_samples = len(epochs.times)
+
+    window_stride_samples = window_size_samples
+
+    print(f"Epochenlänge: {epoch_length_s:.2f}s ({window_size_samples} samples)")
+    print(f"Sampling frequency: {sfreq}Hz")
 
     n_chans = epochs.info['nchan']
     n_classes = len(epochs.event_id)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"\nVerwende Gerät: {device}")
     print(f"Anzahl Klassen: {n_classes}")
+    print(f"Anzahl Kanäle: {n_chans}")
 
-    # --- 1. Gruppen für die Kreuzvalidierung erstellen ---
-    n_splits = 2  # Sie können diesen Wert erhöhen, z.B. auf 5
+    n_splits = 3
 
     epoch_indices = np.arange(len(epochs))
     groups = np.floor(epoch_indices / (len(epochs) / n_splits)).astype(int)
@@ -144,11 +150,11 @@ def train_eegnet_with_cv():
         print(f"\n--- Starte Fold {fold + 1}/{n_splits} ---")
 
         model = EEGNet(
-            input_window_seconds=window_size_s,
+            input_window_seconds=epoch_length_s,
             sfreq=sfreq,
             n_chans=n_chans,
             n_outputs=n_classes,
-            final_conv_length='mean',
+            final_conv_length='auto',
             pool_mode='max',
             kernel_length=64,
         )
@@ -156,18 +162,21 @@ def train_eegnet_with_cv():
         train_epochs = epochs[train_idx]
         test_epochs = epochs[test_idx]
 
+        print(f"Train/Test Split: {len(train_epochs)}/{len(test_epochs)} Epochen")
+
+        # Erstelle Datasets mit korrigiertem Windowing
         train_dataset = create_from_mne_epochs(
             [train_epochs],
             window_size_samples=window_size_samples,
             window_stride_samples=window_stride_samples,
-            drop_last_window=True
+            drop_last_window=False
         )
 
         test_dataset = create_from_mne_epochs(
             [test_epochs],
             window_size_samples=window_size_samples,
             window_stride_samples=window_stride_samples,
-            drop_last_window=True
+            drop_last_window=False
         )
 
         print(f"Trainingsdaten: {len(train_epochs)} Epochen -> {len(train_dataset)} Fenster")
@@ -178,18 +187,18 @@ def train_eegnet_with_cv():
             criterion=torch.nn.CrossEntropyLoss,
             optimizer=torch.optim.AdamW,
             optimizer__lr=0.001,
-            batch_size=32,
-            max_epochs=25,
+            optimizer__weight_decay=0.01,
+            batch_size=16,
+            max_epochs=100,
             train_split=predefined_split(test_dataset),
             device=device,
             classes=[0, 1, 2],
             callbacks=[
-                ("lr_scheduler", LRScheduler('CosineAnnealingLR', T_max=25 - 1)),
+                ("lr_scheduler", LRScheduler('CosineAnnealingLR', T_max=100 - 1)),
             ],
-            verbose=0,
+            verbose=1,
         )
 
-        # KORREKTUR: Nur ein Trainingsaufruf pro Fold
         print("Starte Training für diesen Fold...")
         clf.fit(train_dataset, y=None)
 
