@@ -7,7 +7,7 @@ from braindecode.datasets import create_from_mne_epochs
 from braindecode.models import EEGNet, ShallowFBCSPNet, Deep4Net, EEGNetv4, ATCNet, AttentionBaseNet
 
 from sklearn.model_selection import StratifiedKFold
-from sklearn.preprocessing import RobustScaler
+from sklearn.preprocessing import StandardScaler
 import numpy as np
 from skorch.callbacks import LRScheduler
 from skorch.helper import predefined_split
@@ -17,11 +17,10 @@ from sklearn.metrics import confusion_matrix, classification_report, f1_score
 mne.set_log_level("ERROR")
 
 
-
 def load_and_prepare_data():
     base_dir = Path(__file__).parent.parent.parent.parent
     epochs_path = (
-        base_dir / "results" / "processed" / "Aliaa" / "indoor_processed-epo.fif"
+            base_dir / "results" / "processed" / "Aliaa" / "indoor_processed-epo.fif"
     )
 
     if not epochs_path.exists():
@@ -96,33 +95,21 @@ def normalize_epochs_with_baseline(task_epochs, baseline_epochs, config=None):
         copy=False
     )  # Shape: (n_epochs, n_chans, n_times)
 
-    # 1. Band-pass Filter für bessere Signal-Rausch-Verhältnis
-    # task_epochs_filtered = task_epochs.copy()
-    # task_epochs_filtered.filter(l_freq=filter_low, h_freq=filter_high, fir_design="firwin")
-    
-    # 2. Notch Filter bei 50Hz für Netzstörungen (falls vorhanden)
-    # task_epochs_filtered.notch_filter(freqs=[50], fir_design="firwin", verbose=False)
-    
     filtered_data = task_epochs.get_data(copy=True)
 
-    # 2. RobustScaler für robuste Normalisierung (weniger sensitiv zu Outliers)
-    # Reshape für sklearn: (samples, features) = (n_epochs * n_times, n_channels)
     baseline_reshaped = baseline_data.transpose(1, 0, 2).reshape(baseline_data.shape[1], -1).T
     filtered_reshaped = filtered_data.transpose(1, 0, 2).reshape(filtered_data.shape[1], -1).T
-    
-    # RobustScaler auf Baseline-Daten fitten
-    scaler = RobustScaler()
+
+    scaler = StandardScaler()
     scaler.fit(baseline_reshaped)
-    
-    # Normalisierung auf gefilterte Task-Daten anwenden
+
     normalized_reshaped = scaler.transform(filtered_reshaped)
-    
+
     # Zurück in ursprüngliche Form bringen: (n_epochs, n_channels, n_times)
     normalized_filtered_data = normalized_reshaped.T.reshape(
         filtered_data.shape[1], filtered_data.shape[0], filtered_data.shape[2]
     ).transpose(1, 0, 2)
 
-    # 3. Ein neues MNE Epochs-Objekt mit den normalisierten und gefilterten Daten erstellen
     normalized_epochs = mne.EpochsArray(
         normalized_filtered_data,
         task_epochs.info,
@@ -138,9 +125,6 @@ def normalize_epochs_with_baseline(task_epochs, baseline_epochs, config=None):
 
 
 def augment_eeg_data(epochs, augment_factor=2):
-    """
-    Erweiterte EEG-Daten Augmentation mit mehreren Techniken.
-    """
     print(f"\nAugmentiere Daten mit Faktor {augment_factor} (erweiterte Methoden)...")
 
     original_data = epochs.get_data()
@@ -153,24 +137,24 @@ def augment_eeg_data(epochs, augment_factor=2):
 
     for aug_idx in range(augment_factor - 1):
         augmented_data = original_data.copy()
-        
+
         # 1. Gaussian Noise (bewährt)
         noise_level = 0.03  # Reduziert für weniger Störung
         augmented_data += np.random.normal(0, noise_level, original_data.shape)
-        
+
         # 2. Time Jittering - leichte zeitliche Verschiebung
         max_shift = 5  # Max 5 Samples Verschiebung
         for epoch_idx in range(len(augmented_data)):
             shift = np.random.randint(-max_shift, max_shift)
             if shift != 0:
                 augmented_data[epoch_idx] = np.roll(augmented_data[epoch_idx], shift, axis=1)
-        
+
         # 3. Amplitude Scaling pro Kanal
         for epoch_idx in range(len(augmented_data)):
             for ch_idx in range(augmented_data.shape[1]):
                 scale_factor = np.random.uniform(0.9, 1.1)  # 10% Amplitude Varianz
                 augmented_data[epoch_idx, ch_idx] *= scale_factor
-        
+
         # 4. Channel Dropout (zufällig einzelne Kanäle nullsetzen)
         if np.random.random() < 0.1:  # 10% Chance
             dropout_ch = np.random.randint(0, augmented_data.shape[1])
@@ -208,16 +192,6 @@ def augment_eeg_data(epochs, augment_factor=2):
 
 
 def create_cv_splits(epochs, n_splits):
-    """
-    Erstellt einfache StratifiedKFold Cross-Validation Splits.
-
-    Args:
-        epochs: MNE Epochs Objekt
-        n_splits: Anzahl der Splits
-
-    Returns:
-        cv_splitter: StratifiedKFold Splitter
-    """
     targets = epochs.metadata["target"].values
 
     print(
@@ -235,21 +209,6 @@ def create_cv_splits(epochs, n_splits):
 
 
 def get_model(model_name, n_chans, n_classes, epoch_length_s, sfreq, config):
-    """
-    Erstellt verschiedene Braindecode-Modelle basierend auf dem Namen.
-    
-    Args:
-        model_name: Name des Modells ('EEGNet', 'ShallowFBCSPNet', 'Deep4Net')
-        n_chans: Anzahl EEG-Kanäle
-        n_classes: Anzahl Klassen
-        epoch_length_s: Epochenlänge in Sekunden
-        sfreq: Sampling-Frequenz
-        config: Konfigurationsdictionary
-    
-    Returns:
-        model: Initialisiertes Braindecode-Modell
-    """
-    
     if model_name == "EEGNet":
         return EEGNet(
             input_window_seconds=epoch_length_s,
@@ -264,7 +223,7 @@ def get_model(model_name, n_chans, n_classes, epoch_length_s, sfreq, config):
             F2=config["F2"],
             drop_prob=config["dropout_rate"],
         )
-    
+
     elif model_name == "ShallowFBCSPNet":
         return ShallowFBCSPNet(
             n_chans=n_chans,
@@ -276,7 +235,7 @@ def get_model(model_name, n_chans, n_classes, epoch_length_s, sfreq, config):
             final_conv_length='auto',
             drop_prob=config["dropout_rate"]
         )
-    
+
     elif model_name == "Deep4Net":
         return Deep4Net(
             n_chans=n_chans,
@@ -289,7 +248,7 @@ def get_model(model_name, n_chans, n_classes, epoch_length_s, sfreq, config):
             # pool_mode='max',
             drop_prob=config["dropout_rate"]
         )
-    
+
     elif model_name == "ATCNet":
         return ATCNet(
             n_chans=n_chans,
@@ -297,36 +256,51 @@ def get_model(model_name, n_chans, n_classes, epoch_length_s, sfreq, config):
             input_window_seconds=epoch_length_s,
             sfreq=sfreq
         )
-    
+
     elif model_name == "AttentionBaseNet":
         return AttentionBaseNet(
             n_chans=n_chans,
             n_outputs=n_classes,
             input_window_seconds=epoch_length_s,
-            sfreq=sfreq
+            sfreq=sfreq,
         )
-    
+
     else:
-        raise ValueError(f"Unbekanntes Modell: {model_name}. Verfügbar: EEGNet, ShallowFBCSPNet, Deep4Net, ATCNet, EEGNetv4")
+        raise ValueError(
+            f"Unbekanntes Modell: {model_name}. Verfügbar: EEGNet, ShallowFBCSPNet, Deep4Net, ATCNet, EEGNetv4")
 
 
 def train_eegnet_with_cv():
     config = {
-        "model_name": "AttentionBaseNet",  # 'EEGNet', 'ShallowFBCSPNet', 'Deep4Net', 'ATCNet', 'EEGNetv4'
-        "n_splits": 3,  # Zurück zu 3 für schnellere Tests
-        "lr": 0.001,  # Standard Learning Rate für ATCNet
-        "batch_size": 16,  # Kleinere Batch Size für Attention-Modelle
-        "max_epochs": 100,  # Weniger Epochen da ATCNet schneller konvergiert
-        "kernel_length": 64,
-        "F1": 16,
-        "D": 4,
-        "F2": 32,
-        "dropout_rate": 0.3,  # Etwas höherer Dropout für komplexere Modelle
-        "weight_decay": 0.001,
-        "patience": 20,  # Early stopping patience
-        "augmentation_factor": 2,  # Moderate Augmentation
-        "filter_low": 1.0,  # Erweiterte Filterung für bessere Features
-        "filter_high": 40.0,
+        "model_name": "AttentionBaseNet",  # Optimiertes AttentionBaseNet
+        "n_splits": 3,  # 3 Folds für Balance zwischen Genauigkeit und Geschwindigkeit
+
+        # Optimierte Hyperparameter für AttentionBaseNet
+        "lr": 0.0005,  # Niedrigere LR für stabileres Training bei Attention-Modellen
+        "batch_size": 12,  # Kleinere Batch Size für bessere Gradientenqualität
+        "max_epochs": 120,  # Mehr Epochen da Attention-Modelle langsamer konvergieren
+
+        # Modell-spezifische Parameter
+        "kernel_length": 32,  # Kürzere Kernel für feinere Features
+        "F1": 24,  # Mehr Filter in erster Schicht
+        "D": 6,  # Tiefere Depthwise Convolution
+        "F2": 48,  # Mehr Filter in zweiter Schicht
+
+        # Regularisierung optimiert für Attention
+        "dropout_rate": 0.5,  # Höherer Dropout da Attention-Modelle zu Overfitting neigen
+        "weight_decay": 0.005,  # Stärkere L2-Regularisierung
+
+        # Training-Optimierungen
+        "patience": 25,  # Mehr Geduld für Attention-Konvergenz
+        "augmentation_factor": 3,  # Mehr Datenaugmentation für robustere Features
+
+        # Preprocessing optimiert für kognitive Aufgaben
+        "filter_low": 0.5,  # Niedrigere untere Grenze für langsame Wellen
+        "filter_high": 35.0,  # Höhere obere Grenze für Gamma-Band
+
+        # Zusätzliche Attention-spezifische Parameter
+        "label_smoothing": 0.15,  # Höheres Label Smoothing
+        "warmup_epochs": 10,  # Warmup für stabilere Attention-Gewichte
     }
 
     epochs, baseline_epochs = load_and_prepare_data()
@@ -359,7 +333,7 @@ def train_eegnet_with_cv():
 
     # Cross-validation durchführen
     for fold, (train_idx, test_idx) in enumerate(
-        cv_splitter.split(X=epochs.get_data(), y=epochs.metadata["target"])
+            cv_splitter.split(X=epochs.get_data(), y=epochs.metadata["target"])
     ):
         print(f"\n--- Starte Fold {fold + 1}/{n_splits} ---")
 
@@ -375,8 +349,8 @@ def train_eegnet_with_cv():
         train_epochs = epochs[train_idx]
         test_epochs = epochs[test_idx]
 
-        # Data Augmentation nur für Training Set
-        train_epochs_augmented = augment_eeg_data(train_epochs, augment_factor=2)
+        # Data Augmentation mit erhöhtem Faktor
+        train_epochs_augmented = augment_eeg_data(train_epochs, augment_factor=config["augmentation_factor"])
 
         print(
             f"Train/Test Split: {len(train_epochs_augmented)}/{len(test_epochs)} Epochen (nach Augmentation)"
@@ -420,11 +394,12 @@ def train_eegnet_with_cv():
             criterion__weight=torch.FloatTensor(
                 [class_weights[i] for i in range(len(class_weights))]
             ),
-            criterion__label_smoothing=0.1,  # Label Smoothing für bessere Generalisierung
+            criterion__label_smoothing=config["label_smoothing"],  # Optimiertes Label Smoothing
             optimizer=torch.optim.AdamW,
             optimizer__lr=config["lr"],
             optimizer__weight_decay=config["weight_decay"],
             optimizer__betas=(0.9, 0.999),  # Optimierte Adam Parameter
+            optimizer__eps=1e-8,  # Numerische Stabilität
             batch_size=config["batch_size"],
             max_epochs=config["max_epochs"],
             train_split=predefined_split(test_dataset),
