@@ -721,26 +721,6 @@ def train_single_session_eegnet(
             use_braindecode = False
 
     if not use_braindecode:
-        # Fallback zu SimpleEEGNet
-        try:
-            from .SimpleEEGNet import train_simple_eegnet
-        except ImportError:
-            # Für direkten Import wenn nicht als Modul ausgeführt
-            import sys
-            from pathlib import Path
-
-            sys.path.append(str(Path(__file__).parent))
-            from SimpleEEGNet import train_simple_eegnet
-
-        print("Using SimpleEEGNet fallback...")
-        results_summary = train_simple_eegnet(
-            epochs_path=epochs_path,
-            output_dir=output_dir,
-            participant_name=participant_name,
-            session_name=session_name,
-        )
-        results_summary["method"] = "simple_eegnet_fallback"
-
         return results_summary
 
 

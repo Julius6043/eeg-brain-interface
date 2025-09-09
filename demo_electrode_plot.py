@@ -5,6 +5,10 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
+# Set random seed for reproducibility
+RANDOM_SEED = 42
+np.random.seed(RANDOM_SEED)
+
 # Create sample data based on your previous results
 sample_data = {
     'excluded_electrode': ['None', 'EEG7', 'EEG8', 'EEG6', 'EEG3', 'EEG5', 'EEG1', 'EEG4', 'EEG2'],
@@ -64,6 +68,16 @@ ax2.set_xticks(x_pos)
 ax2.set_xticklabels(electrodes, rotation=45)
 ax2.legend()
 ax2.grid(axis='y', alpha=0.3)
+
+# Set tighter y-axis limits to better show differences between bars
+all_accuracies = baseline_acc + reduced_acc
+min_acc = min(all_accuracies)
+max_acc = max(all_accuracies)
+acc_range = max_acc - min_acc
+
+# Add 10% padding above and below the data range for better visibility
+y_padding = max(0.02, acc_range * 0.1)  # At least 2% padding or 10% of range
+ax2.set_ylim(min_acc - y_padding, max_acc + y_padding)
 
 # Plot 3: Statistical significance visualization
 baseline_std = df[df['excluded_electrode'] == 'None']['accuracy_std'].iloc[0]
