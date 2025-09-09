@@ -163,8 +163,9 @@ def eeg_stream_to_raw(eeg_stream: dict, config: DataLoadingConfig) -> mne.io.Raw
             print(f"[INFO] Skaliere von µV zu V (median={med_abs:.1f})")
             data *= 1e-6
 
-    # Generische Kanalnamen – TODO: Echte Namen aus Metadaten extrahieren, falls vorhanden.
-    ch_names = [f"EEG{i + 1}" for i in range(data.shape[0])]
+    # Channel mapping
+    channel_mapping = {1: "Fz", 2: "C4", 3: "Cz", 4: "C3", 5: "Pz", 6: "PO8", 7: "Oz", 8: "PO7"}
+    ch_names = [channel_mapping.get(i + 1, f"EEG{i + 1}") for i in range(data.shape[0])]
 
     # Erstelle MNE Raw Objekt
     raw = mne.io.RawArray(data, mne.create_info(ch_names, fs, ch_types="eeg"))
