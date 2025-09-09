@@ -27,6 +27,8 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.preprocessing import StandardScaler
 from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.base import clone
+from scipy import stats
 import matplotlib.pyplot as plt
 import seaborn as sns
 from collections import defaultdict, Counter
@@ -43,7 +45,9 @@ np.random.seed(RANDOM_SEED)
 ANALYSIS_SESSION = "indoor"  # Change to "indoor" or "outdoor"
 
 # Auto-generated configuration (DO NOT MODIFY)
-ALL_ELECTRODES = ["EEG1", "EEG2", "EEG3", "EEG4", "EEG5", "EEG6", "EEG7", "EEG8"]
+# Updated electrode names to match the channel mapping from data_loading.py
+# channel_mapping = {1: "Fz", 2: "C4", 3: "Cz", 4: "C3", 5: "Pz", 6: "PO8", 7: "Oz", 8: "PO7"}
+ALL_ELECTRODES = ["Fz", "C4", "Cz", "C3", "Pz", "PO8", "Oz", "PO7"]
 INCLUDE_0_BACK = False  # Working memory load analysis only
 SESSION_TYPES = [ANALYSIS_SESSION]  # Automatically set based on ANALYSIS_SESSION
 
@@ -52,7 +56,6 @@ ALL_RESULTS = []
 ELECTRODE_RANKINGS = defaultdict(list)  # electrode -> list of ranks across analyses
 ELECTRODE_RANK_SUMS = defaultdict(int)  # electrode -> sum of ranks (higher = worse)
 ACCURACY_COMPARISON_RESULTS = []  # 8 vs 4 electrode comparison results
-INDOOR_OUTDOOR_COMPARISON_RESULTS = []  # Indoor vs outdoor comparison results
 
 def get_available_participants():
     """Scan for available processed data"""
@@ -66,6 +69,25 @@ def get_available_participants():
             participants.append(participant_dir.name)
     
     return sorted(participants)
+
+def get_participants_with_both_sessions():
+    """Get participants who have both indoor and outdoor data"""
+    processed_dir = Path("results/processed")
+    if not processed_dir.exists():
+        return []
+    
+    participants_with_both = []
+    for participant_dir in processed_dir.iterdir():
+        if participant_dir.is_dir() and not participant_dir.name.endswith('.csv'):
+            participant = participant_dir.name
+            indoor_file = participant_dir / "indoor_processed-epo.fif"
+            outdoor_file = participant_dir / "outdoor_processed-epo.fif"
+            
+            if indoor_file.exists() and outdoor_file.exists():
+                participants_with_both.append(participant)
+    
+    print(f"Found {len(participants_with_both)} participants with both indoor and outdoor data: {participants_with_both}")
+    return sorted(participants_with_both)
 
 def load_participant_session(participant, session_type):
     """Load epochs for a specific participant and session"""
@@ -191,6 +213,221 @@ def train_and_evaluate_rf(X, y, cv_folds=5):
     
     return scores.mean(), scores.std(), scores
 
+def train_and_evaluate_rf_with_models(X, y, cv_folds=5):
+    """Train Random Forest with cross-validation and return trained models + individual fold scores"""
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    # Apply feature selection if more than 20 features
+    if X_scaled.shape[1] > 20:
+        selector = SelectKBest(score_func=f_classif, k=20)
+        X_selected = selector.fit_transform(X_scaled, y)
+    else:
+        selector = None
+        X_selected = X_scaled
+
+    min_class_count = np.bincount(y).min()
+    n_splits = min(cv_folds, min_class_count) if min_class_count > 1 else 2
+
+    rf = RandomForestClassifier(n_estimators=1000, max_depth=None,
+                               min_samples_split=4, min_samples_leaf=6,
+                               class_weight="balanced", random_state=RANDOM_SEED, n_jobs=-1)
+
+    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=RANDOM_SEED)
+    
+    # Store individual fold scores and trained models
+    fold_scores = []
+    trained_models = []
+    
+    for train_idx, val_idx in cv.split(X_selected, y):
+        X_train_fold, X_val_fold = X_selected[train_idx], X_selected[val_idx]
+        y_train_fold, y_val_fold = y[train_idx], y[val_idx]
+        
+        # Train model on this fold
+        rf_fold = clone(rf)
+        rf_fold.fit(X_train_fold, y_train_fold)
+        
+        # Evaluate on validation set
+        score = rf_fold.score(X_val_fold, y_val_fold)
+        fold_scores.append(score)
+        
+        # Store the trained model and preprocessing objects
+        trained_models.append({
+            'model': rf_fold,
+            'scaler': scaler,
+            'selector': selector,
+            'train_indices': train_idx
+        })
+    
+    fold_scores = np.array(fold_scores)
+    return fold_scores.mean(), fold_scores.std(), fold_scores, trained_models, scaler, selector
+
+def test_models_on_outdoor_data(trained_models, outdoor_epochs, exclude_channels=None):
+    """Test trained indoor models on outdoor data (no data leakage)"""
+    if outdoor_epochs is None:
+        return None, None, None
+    
+    y_outdoor = outdoor_epochs.metadata["difficulty"].astype(int).to_numpy()
+    X_outdoor, _, _ = extract_features(outdoor_epochs, exclude_channels=exclude_channels)
+    
+    outdoor_scores = []
+    
+    for model_info in trained_models:
+        scaler = model_info['scaler']
+        selector = model_info['selector']
+        model = model_info['model']
+        
+        # Apply same preprocessing as training
+        X_outdoor_scaled = scaler.transform(X_outdoor)
+        
+        if selector is not None:
+            X_outdoor_selected = selector.transform(X_outdoor_scaled)
+        else:
+            X_outdoor_selected = X_outdoor_scaled
+        
+        # Test model on outdoor data
+        score = model.score(X_outdoor_selected, y_outdoor)
+        outdoor_scores.append(score)
+    
+    outdoor_scores = np.array(outdoor_scores)
+    return outdoor_scores.mean(), outdoor_scores.std(), outdoor_scores
+
+def compare_8vs4_electrodes_with_ttest_and_outdoor_testing(participant, best_4_electrodes):
+    """Enhanced comparison with proper cross-validation, t-test, and outdoor testing"""
+    print(f"\n🔬 ENHANCED 8 vs 4 Electrode Analysis: {participant}")
+    print("="*70)
+    
+    # Load indoor data for training
+    indoor_epochs = load_participant_session(participant, "indoor")
+    if indoor_epochs is None:
+        print(f"⚠ No indoor data for {participant}")
+        return None
+    
+    # Load outdoor data for testing
+    outdoor_epochs = load_participant_session(participant, "outdoor")
+    outdoor_available = outdoor_epochs is not None
+    
+    print(f"🏆 Best 4 electrodes: {best_4_electrodes}")
+    print(f"📊 Outdoor data available: {'Yes' if outdoor_available else 'No'}")
+    
+    y_indoor = indoor_epochs.metadata["difficulty"].astype(int).to_numpy()
+    
+    # === PHASE 1: INDOOR CROSS-VALIDATION TRAINING ===
+    print(f"\n📈 PHASE 1: Indoor Cross-Validation Training")
+    print("-" * 50)
+    
+    # Train with all 8 electrodes on indoor data
+    print("→ Training with all 8 electrodes (indoor CV)...")
+    X_8_electrodes, _, _ = extract_features(indoor_epochs)
+    acc_8_mean, acc_8_std, acc_8_scores, models_8, scaler_8, selector_8 = train_and_evaluate_rf_with_models(X_8_electrodes, y_indoor)
+    
+    # Train with best 4 electrodes on indoor data
+    print(f"→ Training with best 4 electrodes (indoor CV)...")
+    worst_4_electrodes = [el for el in ALL_ELECTRODES if el not in best_4_electrodes]
+    X_4_electrodes, _, _ = extract_features(indoor_epochs, exclude_channels=worst_4_electrodes)
+    acc_4_mean, acc_4_std, acc_4_scores, models_4, scaler_4, selector_4 = train_and_evaluate_rf_with_models(X_4_electrodes, y_indoor)
+    
+    print(f"  8 electrodes (indoor CV): {acc_8_mean:.3f} ± {acc_8_std:.3f}")
+    print(f"  4 electrodes (indoor CV): {acc_4_mean:.3f} ± {acc_4_std:.3f}")
+    print(f"  Individual 8-electrode scores: {[f'{s:.3f}' for s in acc_8_scores]}")
+    print(f"  Individual 4-electrode scores: {[f'{s:.3f}' for s in acc_4_scores]}")
+    
+    # === PHASE 2: STATISTICAL COMPARISON (T-TEST) ===
+    print(f"\n📊 PHASE 2: Statistical Comparison (Paired T-Test)")
+    print("-" * 50)
+    
+    # Perform paired t-test between 8-electrode and 4-electrode CV scores
+    t_stat, p_value = stats.ttest_rel(acc_8_scores, acc_4_scores)
+    
+    print(f"  Paired t-test results:")
+    print(f"  T-statistic: {t_stat:.4f}")
+    print(f"  P-value: {p_value:.4f}")
+    print(f"  Significance level: {'***' if p_value < 0.001 else '**' if p_value < 0.01 else '*' if p_value < 0.05 else 'ns'}")
+    
+    if p_value < 0.05:
+        better_config = "8 electrodes" if acc_8_mean > acc_4_mean else "4 electrodes"
+        print(f"  🎯 Significant difference detected: {better_config} performs better (p < 0.05)")
+    else:
+        print(f"  🤝 No significant difference between configurations (p ≥ 0.05)")
+    
+    # === PHASE 3: OUTDOOR TESTING ===
+    outdoor_8_mean = outdoor_4_mean = None
+    outdoor_8_std = outdoor_4_std = None
+    outdoor_8_scores = outdoor_4_scores = None
+    
+    if outdoor_available:
+        print(f"\n🌳 PHASE 3: Outdoor Testing (No Data Leakage)")
+        print("-" * 50)
+        
+        # Test 8-electrode models on outdoor data
+        print("→ Testing 8-electrode models on outdoor data...")
+        outdoor_8_mean, outdoor_8_std, outdoor_8_scores = test_models_on_outdoor_data(
+            models_8, outdoor_epochs, exclude_channels=None
+        )
+        
+        # Test 4-electrode models on outdoor data  
+        print("→ Testing 4-electrode models on outdoor data...")
+        outdoor_4_mean, outdoor_4_std, outdoor_4_scores = test_models_on_outdoor_data(
+            models_4, outdoor_epochs, exclude_channels=worst_4_electrodes
+        )
+        
+        print(f"  8 electrodes (outdoor test): {outdoor_8_mean:.3f} ± {outdoor_8_std:.3f}")
+        print(f"  4 electrodes (outdoor test): {outdoor_4_mean:.3f} ± {outdoor_4_std:.3f}")
+        print(f"  Individual 8-electrode outdoor scores: {[f'{s:.3f}' for s in outdoor_8_scores]}")
+        print(f"  Individual 4-electrode outdoor scores: {[f'{s:.3f}' for s in outdoor_4_scores]}")
+        
+        # Performance drop from indoor to outdoor
+        indoor_to_outdoor_drop_8 = acc_8_mean - outdoor_8_mean
+        indoor_to_outdoor_drop_4 = acc_4_mean - outdoor_4_mean
+        
+        print(f"\n📉 Generalization Analysis:")
+        print(f"  8-electrode indoor→outdoor drop: {indoor_to_outdoor_drop_8:.3f}")
+        print(f"  4-electrode indoor→outdoor drop: {indoor_to_outdoor_drop_4:.3f}")
+        
+        generalization_ratio_8 = outdoor_8_mean / acc_8_mean if acc_8_mean > 0 else 0
+        generalization_ratio_4 = outdoor_4_mean / acc_4_mean if acc_4_mean > 0 else 0
+        
+        print(f"  8-electrode generalization: {generalization_ratio_8*100:.1f}% of indoor performance")
+        print(f"  4-electrode generalization: {generalization_ratio_4*100:.1f}% of indoor performance")
+    else:
+        print(f"\n🌳 PHASE 3: Outdoor Testing - Skipped (no outdoor data)")
+    
+    # Return comprehensive results
+    results = {
+        'participant': participant,
+        'best_4_electrodes': ', '.join(best_4_electrodes),
+        
+        # Indoor cross-validation results
+        'indoor_cv_8_mean': acc_8_mean,
+        'indoor_cv_8_std': acc_8_std, 
+        'indoor_cv_8_scores': acc_8_scores,
+        'indoor_cv_4_mean': acc_4_mean,
+        'indoor_cv_4_std': acc_4_std,
+        'indoor_cv_4_scores': acc_4_scores,
+        
+        # Statistical test results
+        't_statistic': t_stat,
+        'p_value': p_value,
+        'significant_difference': p_value < 0.05,
+        
+        # Outdoor test results (if available)
+        'outdoor_test_8_mean': outdoor_8_mean,
+        'outdoor_test_8_std': outdoor_8_std,
+        'outdoor_test_8_scores': outdoor_8_scores,
+        'outdoor_test_4_mean': outdoor_4_mean, 
+        'outdoor_test_4_std': outdoor_4_std,
+        'outdoor_test_4_scores': outdoor_4_scores,
+        'outdoor_available': outdoor_available,
+        
+        # Performance analysis
+        'indoor_difference_8_minus_4': acc_8_mean - acc_4_mean,
+        'outdoor_difference_8_minus_4': (outdoor_8_mean - outdoor_4_mean) if outdoor_available else None,
+        'generalization_ratio_8': (outdoor_8_mean / acc_8_mean) if outdoor_available and acc_8_mean > 0 else None,
+        'generalization_ratio_4': (outdoor_4_mean / acc_4_mean) if outdoor_available and acc_4_mean > 0 else None
+    }
+    
+    return results
+
 def analyze_single_participant_session(participant, session_type):
     """Run electrode importance analysis for one participant-session combination"""
     print(f"\n{'='*60}")
@@ -208,7 +445,7 @@ def analyze_single_participant_session(participant, session_type):
     # Baseline performance (all electrodes) - FIT feature selector here
     print("→ Baseline performance (all electrodes)...")
     X_all, _, ep_filt_all = extract_features(epochs)
-    baseline_mean, baseline_std, _, feature_selector = train_and_evaluate_rf(X_all, y)
+    baseline_mean, baseline_std, _ = train_and_evaluate_rf(X_all, y)
     
     results.append({
         'participant': participant,
@@ -268,65 +505,6 @@ def analyze_single_participant_session(participant, session_type):
         print(f"🏆 Most important: {most_important}")
     
     return results
-
-def compare_indoor_vs_outdoor_4electrodes(participant, best_4_electrodes):
-    """Compare accuracy of same 4 electrodes between indoor and outdoor environments"""
-    print(f"\n🏠🌳 Indoor vs Outdoor Comparison (4 electrodes): {participant}")
-    
-    # Load both indoor and outdoor data for this participant
-    indoor_epochs = load_participant_session(participant, "indoor")
-    outdoor_epochs = load_participant_session(participant, "outdoor")
-    
-    # Check if both sessions are available
-    if indoor_epochs is None and outdoor_epochs is None:
-        print(f"⚠ No data available for {participant}")
-        return None
-    elif indoor_epochs is None:
-        print(f"⚠ No indoor data for {participant}")
-        return None
-    elif outdoor_epochs is None:
-        print(f"⚠ No outdoor data for {participant}")
-        return None
-    
-    # Prepare feature extraction with only best 4 electrodes
-    worst_4_electrodes = [el for el in ALL_ELECTRODES if el not in best_4_electrodes]
-    print(f"→ Using electrodes: {best_4_electrodes}")
-    
-    # Indoor performance
-    print("→ Testing indoor performance...")
-    y_indoor = indoor_epochs.metadata["difficulty"].astype(int).to_numpy()
-    X_indoor, _, _ = extract_features(indoor_epochs, exclude_channels=worst_4_electrodes)
-    acc_indoor_mean, acc_indoor_std, _ = train_and_evaluate_rf(X_indoor, y_indoor)
-    
-    # Outdoor performance
-    print("→ Testing outdoor performance...")
-    y_outdoor = outdoor_epochs.metadata["difficulty"].astype(int).to_numpy()
-    X_outdoor, _, _ = extract_features(outdoor_epochs, exclude_channels=worst_4_electrodes)
-    acc_outdoor_mean, acc_outdoor_std, _ = train_and_evaluate_rf(X_outdoor, y_outdoor)
-    
-    # Calculate difference (indoor - outdoor)
-    accuracy_difference = acc_indoor_mean - acc_outdoor_mean
-    performance_ratio = acc_outdoor_mean / acc_indoor_mean if acc_indoor_mean > 0 else 0
-    
-    comparison_result = {
-        'participant': participant,
-        'best_4_electrodes': ', '.join(best_4_electrodes),
-        'accuracy_indoor': acc_indoor_mean,
-        'accuracy_indoor_std': acc_indoor_std,
-        'accuracy_outdoor': acc_outdoor_mean,
-        'accuracy_outdoor_std': acc_outdoor_std,
-        'accuracy_difference_indoor_outdoor': accuracy_difference,
-        'performance_ratio_outdoor_indoor': performance_ratio,
-        'indoor_epochs': len(indoor_epochs),
-        'outdoor_epochs': len(outdoor_epochs)
-    }
-    
-    print(f"  🏠 Indoor accuracy: {acc_indoor_mean:.3f} ± {acc_indoor_std:.3f}")
-    print(f"  🌳 Outdoor accuracy: {acc_outdoor_mean:.3f} ± {acc_outdoor_std:.3f}")
-    print(f"  📊 Difference (I-O): {accuracy_difference:.3f}")
-    print(f"  📈 Outdoor/Indoor ratio: {performance_ratio:.3f}")
-    
-    return comparison_result
 
 def compare_8vs4_electrodes(participant, session_type, best_4_electrodes):
     """Compare accuracy using all 8 electrodes vs only the best 4 electrodes"""
@@ -501,228 +679,315 @@ def create_electrode_comparison_visualization(comparison_results, session_type="
     plt.show()
     return fig
 
-def create_indoor_outdoor_comparison_visualization(comparison_results):
-    """Create visualization comparing indoor vs outdoor performance with same 4 electrodes"""
+def create_session_visualization(all_results_df, session_type="indoor"):
+    """Create visualization for session analysis results"""
     
-    if not comparison_results:
-        print("❌ No indoor vs outdoor comparison results to visualize!")
+    if all_results_df is None or all_results_df.empty:
+        print(f"❌ No {session_type} analysis results to visualize!")
         return None
-    
-    df = pd.DataFrame(comparison_results)
     
     # Set up the plotting style
     plt.style.use('default')
     sns.set_palette("Set2")
     np.random.seed(RANDOM_SEED)
     
-    # Create figure with multiple subplots
-    fig = plt.figure(figsize=(16, 12))
-    gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
+    # Create figure with electrode importance visualization
+    fig, ax = plt.subplots(figsize=(12, 8))
     
-    fig.suptitle(f'Indoor vs Outdoor Performance Comparison\n4 Best Electrodes Only', 
+    # Filter data to only leave-one-out results (not baseline)
+    loo_data = all_results_df[all_results_df['condition'] == 'leave_one_out'].copy()
+    
+    if loo_data.empty:
+        ax.text(0.5, 0.5, f'No leave-one-out data\navailable for {session_type}', 
+                ha='center', va='center', transform=ax.transAxes, fontsize=14, color='gray')
+        ax.set_title(f'{session_type.title()} Session - Electrode Performance Analysis', 
+                     fontsize=14, fontweight='bold')
+        return fig
+    
+    # Group by excluded electrode and calculate mean accuracy drop (higher drop = more important)
+    electrode_drops = loo_data.groupby('excluded_electrode')['accuracy_drop'].mean().sort_values(ascending=False)
+    
+    # Create bar plot
+    bars = ax.bar(range(len(electrode_drops)), electrode_drops.values, 
+                  color=plt.cm.viridis(np.linspace(0, 1, len(electrode_drops))))
+    
+    # Customize the plot
+    ax.set_xlabel('Electrode', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Mean Accuracy Drop\n(Higher = More Important)', fontsize=12, fontweight='bold')
+    ax.set_title(f'{session_type.title()} Session - Electrode Importance Analysis\n(Accuracy Drop When Removed)', 
+                 fontsize=14, fontweight='bold')
+    ax.set_xticks(range(len(electrode_drops)))
+    ax.set_xticklabels(electrode_drops.index, rotation=45)
+    ax.grid(True, alpha=0.3)
+    
+    # Add value labels on bars
+    for i, (electrode, drop) in enumerate(electrode_drops.items()):
+        ax.text(i, drop + 0.001, f'{drop:.3f}', ha='center', va='bottom', fontweight='bold')
+    
+    plt.tight_layout()
+    
+    # Save the plot
+    output_dir = Path("results")
+    output_dir.mkdir(exist_ok=True)
+    plot_path = output_dir / f"{session_type}_electrode_analysis_visualization.png"
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    print(f"📊 {session_type.title()} session visualization saved to: {plot_path}")
+    
+    plt.show()
+    
+    return plot_path
+
+def create_rank_sum_visualization(rank_sum_data, session_type="indoor"):
+    """Create visualization for electrode rank sum analysis"""
+    
+    if not rank_sum_data:
+        print(f"❌ No rank sum data to visualize for {session_type}!")
+        return None
+    
+    # Sort by rank sum (lower is better)
+    rank_sum_sorted = sorted(rank_sum_data.items(), key=lambda x: x[1])
+    
+    # Set up the plotting style
+    plt.style.use('default')
+    sns.set_palette("Set2")
+    np.random.seed(RANDOM_SEED)
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=(12, 8))
+    
+    # Extract data
+    electrodes = [item[0] for item in rank_sum_sorted]
+    rank_sums = [item[1] for item in rank_sum_sorted]
+    
+    # Create color gradient (green for best, red for worst)
+    colors = plt.cm.RdYlGn_r(np.linspace(0.2, 0.8, len(electrodes)))
+    
+    # Create bar plot
+    bars = ax.bar(range(len(electrodes)), rank_sums, color=colors, alpha=0.8)
+    
+    # Customize the plot
+    ax.set_xlabel('Electrode', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Rank Sum\n(Lower = Better Performance)', fontsize=12, fontweight='bold')
+    ax.set_title(f'{session_type.title()} Session - Electrode Ranking Summary\n(Based on Cumulative Rankings Across All Participants)', 
+                 fontsize=14, fontweight='bold')
+    ax.set_xticks(range(len(electrodes)))
+    ax.set_xticklabels(electrodes, rotation=45)
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    # Add value labels on bars
+    for i, (electrode, rank_sum) in enumerate(zip(electrodes, rank_sums)):
+        ax.text(i, rank_sum + max(rank_sums) * 0.01, f'{rank_sum}', 
+                ha='center', va='bottom', fontweight='bold', fontsize=10)
+    
+    # Add rank position labels
+    for i, (electrode, rank_sum) in enumerate(zip(electrodes, rank_sums)):
+        position = i + 1
+        ax.text(i, rank_sum * 0.5, f'#{position}', 
+                ha='center', va='center', fontweight='bold', 
+                fontsize=12, color='white' if rank_sum > max(rank_sums) * 0.7 else 'black')
+    
+    plt.tight_layout()
+    
+    # Save the plot
+    output_dir = Path("results")
+    output_dir.mkdir(exist_ok=True)
+    plot_path = output_dir / f"{session_type}_electrode_rank_sum_visualization.png"
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    print(f"📊 {session_type.title()} rank sum visualization saved to: {plot_path}")
+    
+    plt.show()
+    
+    return plot_path
+
+def create_enhanced_comparison_visualization(enhanced_results):
+    """Create visualization for the enhanced comparison with t-tests and outdoor testing"""
+    
+    if not enhanced_results:
+        print("❌ No enhanced comparison results to visualize!")
+        return None
+    
+    df = pd.DataFrame(enhanced_results)
+    
+    # Set up plotting
+    plt.style.use('default')
+    sns.set_palette("Set2")
+    np.random.seed(RANDOM_SEED)
+    
+    # Create figure with 2x3 layout
+    fig = plt.figure(figsize=(20, 12))
+    gs = fig.add_gridspec(2, 3, hspace=0.3, wspace=0.3)
+    
+    fig.suptitle('Enhanced 8 vs 4 Electrode Analysis\nIndoor Training → Statistical Testing → Outdoor Generalization', 
                  fontsize=16, fontweight='bold', color='darkblue')
     
-    # 1. Individual participant comparison
+    # 1. Indoor Cross-Validation Comparison
     ax1 = fig.add_subplot(gs[0, 0])
     
-    x_pos = np.arange(len(df))
+    participants = [p.replace('sub-', '') for p in df['participant']]
+    x_pos = np.arange(len(participants))
     width = 0.35
     
-    bars1 = ax1.bar(x_pos - width/2, df['accuracy_indoor'], width, 
-                    label='Indoor', color='lightblue', alpha=0.8,
-                    yerr=df['accuracy_indoor_std'], capsize=5)
-    bars2 = ax1.bar(x_pos + width/2, df['accuracy_outdoor'], width,
-                    label='Outdoor', color='lightgreen', alpha=0.8,
-                    yerr=df['accuracy_outdoor_std'], capsize=5)
+    bars1 = ax1.bar(x_pos - width/2, df['indoor_cv_8_mean'], width,
+                    label='8 Electrodes', color='steelblue', alpha=0.8,
+                    yerr=df['indoor_cv_8_std'], capsize=3)
+    bars2 = ax1.bar(x_pos + width/2, df['indoor_cv_4_mean'], width,
+                    label='4 Best Electrodes', color='lightcoral', alpha=0.8,
+                    yerr=df['indoor_cv_4_std'], capsize=3)
     
     ax1.set_xlabel('Participants', fontweight='bold')
-    ax1.set_ylabel('Classification Accuracy', fontweight='bold')
-    ax1.set_title('Indoor vs Outdoor Accuracy by Participant', fontweight='bold')
+    ax1.set_ylabel('Indoor CV Accuracy', fontweight='bold')
+    ax1.set_title('Indoor Cross-Validation Training', fontweight='bold')
     ax1.set_xticks(x_pos)
-    ax1.set_xticklabels([p.replace('sub-', '') for p in df['participant']], rotation=45)
+    ax1.set_xticklabels(participants, rotation=45)
     ax1.legend()
     ax1.grid(axis='y', alpha=0.3)
     
-    # Add value labels
-    for bar, acc in zip(bars1, df['accuracy_indoor']):
-        ax1.text(bar.get_x() + bar.get_width()/2., acc + 0.01,
-                f'{acc:.3f}', ha='center', va='bottom', fontsize=8)
-    for bar, acc in zip(bars2, df['accuracy_outdoor']):
-        ax1.text(bar.get_x() + bar.get_width()/2., acc + 0.01,
-                f'{acc:.3f}', ha='center', va='bottom', fontsize=8)
-    
-    # 2. Performance ratio (Outdoor/Indoor)
+    # 2. Statistical Significance (P-values)
     ax2 = fig.add_subplot(gs[0, 1])
     
-    ratio_colors = ['green' if r >= 1.0 else 'orange' if r >= 0.9 else 'red' 
-                    for r in df['performance_ratio_outdoor_indoor']]
-    bars = ax2.bar(range(len(df)), df['performance_ratio_outdoor_indoor'], 
-                   color=ratio_colors, alpha=0.7)
-    ax2.axhline(y=1.0, color='black', linestyle='--', alpha=0.8, label='Equal Performance')
-    ax2.axhline(y=0.9, color='gray', linestyle='--', alpha=0.6, label='90% Performance')
+    p_values = df['p_value'].values
+    colors = ['green' if p < 0.05 else 'orange' if p < 0.1 else 'red' for p in p_values]
+    bars = ax2.bar(range(len(participants)), -np.log10(p_values), color=colors, alpha=0.7)
+    
+    ax2.axhline(y=-np.log10(0.05), color='red', linestyle='--', alpha=0.8, label='p = 0.05')
+    ax2.axhline(y=-np.log10(0.01), color='orange', linestyle='--', alpha=0.8, label='p = 0.01')
     
     ax2.set_xlabel('Participants', fontweight='bold')
-    ax2.set_ylabel('Performance Ratio\n(Outdoor/Indoor)', fontweight='bold')
-    ax2.set_title('Outdoor vs Indoor Performance Ratio', fontweight='bold')
-    ax2.set_xticks(range(len(df)))
-    ax2.set_xticklabels([p.replace('sub-', '') for p in df['participant']], rotation=45)
+    ax2.set_ylabel('-log10(p-value)', fontweight='bold')
+    ax2.set_title('Statistical Significance (T-Test)', fontweight='bold')
+    ax2.set_xticks(range(len(participants)))
+    ax2.set_xticklabels(participants, rotation=45)
     ax2.legend()
     ax2.grid(axis='y', alpha=0.3)
     
-    # Add value labels
-    for i, (bar, ratio) in enumerate(zip(bars, df['performance_ratio_outdoor_indoor'])):
-        ax2.text(bar.get_x() + bar.get_width()/2., ratio + 0.02,
-                f'{ratio:.3f}', ha='center', va='bottom', fontsize=8)
+    # Add significance annotations
+    for i, (bar, p_val) in enumerate(zip(bars, p_values)):
+        sig_label = '***' if p_val < 0.001 else '**' if p_val < 0.01 else '*' if p_val < 0.05 else 'ns'
+        ax2.text(bar.get_x() + bar.get_width()/2., bar.get_height() + 0.1,
+                sig_label, ha='center', va='bottom', fontweight='bold')
     
-    # 3. Statistical distribution comparison
-    ax3 = fig.add_subplot(gs[1, 0])
+    # 3. Outdoor Testing Results
+    ax3 = fig.add_subplot(gs[0, 2])
     
-    data_indoor = df['accuracy_indoor'].values
-    data_outdoor = df['accuracy_outdoor'].values
+    # Filter participants with outdoor data
+    outdoor_df = df[df['outdoor_available'] == True]
+    if len(outdoor_df) > 0:
+        outdoor_participants = [p.replace('sub-', '') for p in outdoor_df['participant']]
+        x_pos_outdoor = np.arange(len(outdoor_participants))
+        
+        bars1 = ax3.bar(x_pos_outdoor - width/2, outdoor_df['outdoor_test_8_mean'], width,
+                        label='8 Electrodes', color='darkblue', alpha=0.8,
+                        yerr=outdoor_df['outdoor_test_8_std'], capsize=3)
+        bars2 = ax3.bar(x_pos_outdoor + width/2, outdoor_df['outdoor_test_4_mean'], width,
+                        label='4 Best Electrodes', color='darkred', alpha=0.8,
+                        yerr=outdoor_df['outdoor_test_4_std'], capsize=3)
+        
+        ax3.set_xlabel('Participants', fontweight='bold')
+        ax3.set_ylabel('Outdoor Test Accuracy', fontweight='bold')
+        ax3.set_title('Outdoor Generalization Testing', fontweight='bold')
+        ax3.set_xticks(x_pos_outdoor)
+        ax3.set_xticklabels(outdoor_participants, rotation=45)
+        ax3.legend()
+        ax3.grid(axis='y', alpha=0.3)
+    else:
+        ax3.text(0.5, 0.5, 'No Outdoor Data\nAvailable', ha='center', va='center',
+                transform=ax3.transAxes, fontsize=14, color='gray')
+        ax3.set_title('Outdoor Generalization Testing', fontweight='bold')
     
-    bp = ax3.boxplot([data_indoor, data_outdoor], 
-                     labels=['Indoor', 'Outdoor'],
-                     patch_artist=True)
-    bp['boxes'][0].set_facecolor('lightblue')
-    bp['boxes'][0].set_alpha(0.7)
-    bp['boxes'][1].set_facecolor('lightgreen')
-    bp['boxes'][1].set_alpha(0.7)
+    # 4. Generalization Analysis (Indoor vs Outdoor)
+    ax4 = fig.add_subplot(gs[1, 0])
     
-    ax3.set_ylabel('Classification Accuracy', fontweight='bold')
-    ax3.set_title('Statistical Distribution Comparison', fontweight='bold')
-    ax3.grid(axis='y', alpha=0.3)
+    if len(outdoor_df) > 0:
+        # Plot indoor vs outdoor for both configurations
+        for i, (_, row) in enumerate(outdoor_df.iterrows()):
+            ax4.plot([0, 1], [row['indoor_cv_8_mean'], row['outdoor_test_8_mean']], 
+                    'o-', color='steelblue', alpha=0.7, linewidth=2)
+            ax4.plot([2, 3], [row['indoor_cv_4_mean'], row['outdoor_test_4_mean']], 
+                    'o-', color='lightcoral', alpha=0.7, linewidth=2)
+        
+        ax4.set_xticks([0, 1, 2, 3])
+        ax4.set_xticklabels(['Indoor\n8-Elec', 'Outdoor\n8-Elec', 'Indoor\n4-Elec', 'Outdoor\n4-Elec'])
+        ax4.set_ylabel('Accuracy', fontweight='bold')
+        ax4.set_title('Indoor → Outdoor Generalization', fontweight='bold')
+        ax4.grid(axis='y', alpha=0.3)
+    else:
+        ax4.text(0.5, 0.5, 'No Outdoor Data\nfor Generalization\nAnalysis', 
+                ha='center', va='center', transform=ax4.transAxes, fontsize=12, color='gray')
+        ax4.set_title('Indoor → Outdoor Generalization', fontweight='bold')
     
-    # Add mean lines
-    ax3.axhline(y=data_indoor.mean(), color='blue', linestyle='--', alpha=0.7)
-    ax3.axhline(y=data_outdoor.mean(), color='green', linestyle='--', alpha=0.7)
+    # 5. Performance Retention Analysis
+    ax5 = fig.add_subplot(gs[1, 1])
     
-    # 4. Difference analysis (Indoor - Outdoor)
-    ax4 = fig.add_subplot(gs[1, 1])
+    if len(outdoor_df) > 0:
+        retention_8 = outdoor_df['generalization_ratio_8'] * 100
+        retention_4 = outdoor_df['generalization_ratio_4'] * 100
+        
+        x_pos_ret = np.arange(len(outdoor_participants))
+        bars1 = ax5.bar(x_pos_ret - width/2, retention_8, width,
+                        label='8 Electrodes', color='steelblue', alpha=0.8)
+        bars2 = ax5.bar(x_pos_ret + width/2, retention_4, width,
+                        label='4 Best Electrodes', color='lightcoral', alpha=0.8)
+        
+        ax5.axhline(y=100, color='red', linestyle='--', alpha=0.7, label='Perfect Retention')
+        ax5.axhline(y=90, color='orange', linestyle='--', alpha=0.7, label='90% Retention')
+        
+        ax5.set_xlabel('Participants', fontweight='bold')
+        ax5.set_ylabel('Performance Retention (%)', fontweight='bold')
+        ax5.set_title('Outdoor Performance Retention', fontweight='bold')
+        ax5.set_xticks(x_pos_ret)
+        ax5.set_xticklabels(outdoor_participants, rotation=45)
+        ax5.legend()
+        ax5.grid(axis='y', alpha=0.3)
+    else:
+        ax5.text(0.5, 0.5, 'No Outdoor Data\nfor Retention\nAnalysis', 
+                ha='center', va='center', transform=ax5.transAxes, fontsize=12, color='gray')
+        ax5.set_title('Outdoor Performance Retention', fontweight='bold')
     
-    differences = df['accuracy_difference_indoor_outdoor'].values
-    colors = ['blue' if d >= 0 else 'green' for d in differences]
-    bars = ax4.bar(range(len(df)), differences, color=colors, alpha=0.7)
-    ax4.axhline(y=0, color='black', linestyle='-', alpha=0.8)
-    ax4.axhline(y=differences.mean(), color='purple', linestyle='--', alpha=0.8,
-                label=f'Average: {differences.mean():.3f}')
+    # 6. Summary Statistics Table
+    ax6 = fig.add_subplot(gs[1, 2])
+    ax6.axis('off')
     
-    ax4.set_xlabel('Participants', fontweight='bold')
-    ax4.set_ylabel('Accuracy Difference\n(Indoor - Outdoor)', fontweight='bold')
-    ax4.set_title('Indoor vs Outdoor Difference Analysis', fontweight='bold')
-    ax4.set_xticks(range(len(df)))
-    ax4.set_xticklabels([p.replace('sub-', '') for p in df['participant']], rotation=45)
-    ax4.legend()
-    ax4.grid(axis='y', alpha=0.3)
+    # Calculate summary statistics
+    indoor_8_mean = df['indoor_cv_8_mean'].mean()
+    indoor_4_mean = df['indoor_cv_4_mean'].mean()
+    sig_count = sum(df['significant_difference'])
     
-    # Add value labels
-    for i, (bar, diff) in enumerate(zip(bars, differences)):
-        y_pos = diff + 0.002 if diff >= 0 else diff - 0.005
-        ax4.text(bar.get_x() + bar.get_width()/2., y_pos,
-                f'{diff:.3f}', ha='center', va='bottom' if diff >= 0 else 'top', fontsize=8)
+    summary_text = f"""
+    SUMMARY STATISTICS
     
-    # Save the comparison plot
+    Indoor Cross-Validation:
+    • 8 electrodes: {indoor_8_mean:.3f} ± {df['indoor_cv_8_std'].mean():.3f}
+    • 4 electrodes: {indoor_4_mean:.3f} ± {df['indoor_cv_4_std'].mean():.3f}
+    • Significant differences: {sig_count}/{len(df)}
+    
+    """
+    
+    if len(outdoor_df) > 0:
+        outdoor_8_mean = outdoor_df['outdoor_test_8_mean'].mean()
+        outdoor_4_mean = outdoor_df['outdoor_test_4_mean'].mean()
+        avg_retention_8 = outdoor_df['generalization_ratio_8'].mean() * 100
+        avg_retention_4 = outdoor_df['generalization_ratio_4'].mean() * 100
+        
+        summary_text += f"""Outdoor Testing:
+    • 8 electrodes: {outdoor_8_mean:.3f} ± {outdoor_df['outdoor_test_8_std'].mean():.3f}
+    • 4 electrodes: {outdoor_4_mean:.3f} ± {outdoor_df['outdoor_test_4_std'].mean():.3f}
+    • 8-elec retention: {avg_retention_8:.1f}%
+    • 4-elec retention: {avg_retention_4:.1f}%
+    • Participants tested: {len(outdoor_df)}
+    """
+    else:
+        summary_text += "Outdoor Testing: No data available"
+    
+    ax6.text(0.05, 0.95, summary_text, transform=ax6.transAxes, fontsize=10,
+             verticalalignment='top', fontfamily='monospace',
+             bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.3))
+    
+    # Save plot
     output_dir = Path("results")
     output_dir.mkdir(exist_ok=True)
-    plot_path = output_dir / f"indoor_outdoor_4electrodes_comparison.png"
+    plot_path = output_dir / "enhanced_electrode_comparison_indoor_training_outdoor_testing.png"
     plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
-    print(f"\n📊 Indoor vs Outdoor comparison plot saved to: {plot_path}")
-    
-    plt.show()
-    return fig
-
-def create_session_visualization(all_results_df, session_type="indoor"):
-    """Create comprehensive visualization of electrode importance for specified session type"""
-    
-    # Set up the plotting style with reproducible seed
-    plt.style.use('default')
-    sns.set_palette("Set2")
-    np.random.seed(RANDOM_SEED)  # Ensure reproducible color assignments
-    
-    # Create figure with subplots - 3x2 layout without voting
-    fig = plt.figure(figsize=(18, 14))
-    gs = fig.add_gridspec(3, 2, hspace=0.35, wspace=0.25)
-    
-    session_title = session_type.upper()
-    fig.suptitle(f'EEG Electrode Importance Analysis\n{session_title} SESSIONS ONLY', 
-                 fontsize=18, fontweight='bold', color='darkblue')
-    
-    # 1. Average Ranking Across All Analyses
-    ax1 = fig.add_subplot(gs[0, 0])
-    avg_ranks = {electrode: np.mean(ranks) for electrode, ranks in ELECTRODE_RANKINGS.items()}
-    rank_data = pd.Series(avg_ranks).sort_values(ascending=True)  # Lower rank = more important
-    
-    bars1 = ax1.bar(rank_data.index, rank_data.values, color='steelblue', alpha=0.8, edgecolor='darkblue')
-    ax1.set_ylabel('Average Ranking (Lower = More Important)', fontweight='bold')
-    ax1.set_title(f'{session_title} Sessions: Average Electrode Rankings', fontweight='bold')
-    ax1.tick_params(axis='x', rotation=45)
-    ax1.grid(axis='y', alpha=0.3)
-    
-    # Add value labels
-    for bar, value in zip(bars1, rank_data.values):
-        ax1.text(bar.get_x() + bar.get_width()/2, value + 0.1, 
-                f'{value:.1f}', ha='center', fontweight='bold')
-    
-    # 2. Rank Sum Analysis (Higher = Worse)
-    ax2 = fig.add_subplot(gs[0, 1])
-    rank_sum_data = pd.Series(ELECTRODE_RANK_SUMS).sort_values(ascending=True)  # Lower sum = better
-    
-    bars2 = ax2.bar(rank_sum_data.index, rank_sum_data.values, color='darkred', alpha=0.7, edgecolor='darkblue')
-    ax2.set_ylabel('Cumulative Rank Sum\n(Lower = Better)', fontweight='bold')
-    ax2.set_title(f'{session_title} Sessions: Rank Sum Analysis\n(Lower Sum = Better Electrode)', fontweight='bold')
-    ax2.tick_params(axis='x', rotation=45)
-    ax2.grid(axis='y', alpha=0.3)
-    
-    # Add value labels for rank sum
-    for bar, value in zip(bars2, rank_sum_data.values):
-        ax2.text(bar.get_x() + bar.get_width()/2, value + 0.5, 
-                str(int(value)), ha='center', fontweight='bold')
-    
-    # 3. Ranking Consistency (Standard Deviation)
-    ax3 = fig.add_subplot(gs[1, 0])
-    rank_stds = {electrode: np.std(ranks) for electrode, ranks in ELECTRODE_RANKINGS.items()}
-    std_data = pd.Series(rank_stds).sort_values(ascending=True)
-    
-    bars3 = ax3.bar(std_data.index, std_data.values, color='lightsteelblue', alpha=0.8, edgecolor='darkblue')
-    ax3.set_ylabel('Ranking Standard Deviation\n(Lower = More Consistent)', fontweight='bold')
-    ax3.set_title(f'{session_title} Sessions: Ranking Consistency', fontweight='bold')
-    ax3.tick_params(axis='x', rotation=45)
-    ax3.grid(axis='y', alpha=0.3)
-    
-    # Create data for remaining plots
-    loo_data = all_results_df[all_results_df['condition'] == 'leave_one_out'].copy()
-    loo_data['participant_id'] = loo_data['participant']
-    
-    # 4. Distribution of accuracy drops by electrode - spanning full width  
-    ax4 = fig.add_subplot(gs[2, :])
-    
-    # Box plot of accuracy drops
-    electrode_drops_list = []
-    electrode_labels = []
-    
-    for electrode in ALL_ELECTRODES:
-        drops = loo_data[loo_data['excluded_electrode'] == electrode]['accuracy_drop'].values
-        if len(drops) > 0:
-            electrode_drops_list.append(drops)
-            electrode_labels.append(electrode)
-    
-    # Generate colors for box plots
-    colors = plt.cm.Blues(np.linspace(0.3, 0.9, len(electrode_labels)))
-    bp = ax4.boxplot(electrode_drops_list, labels=electrode_labels, patch_artist=True)
-    for patch, color in zip(bp['boxes'], colors):
-        patch.set_facecolor(color)
-        patch.set_alpha(0.7)
-    
-    ax4.set_ylabel('Accuracy Drop Distribution', fontweight='bold')
-    ax4.set_title(f'{session_title} Sessions: Electrode Importance Distributions', fontweight='bold')
-    ax4.tick_params(axis='x', rotation=45)
-    ax4.grid(axis='y', alpha=0.3)
-    
-    # Save the comprehensive plot
-    output_dir = Path("results")
-    output_dir.mkdir(exist_ok=True)
-    plot_path = output_dir / f"electrode_importance_{session_type}_only_analysis.png"
-    plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
-    print(f"\n📊 {session_title}-only analysis plot saved to: {plot_path}")
+    print(f"\n📊 Enhanced comparison plot saved to: {plot_path}")
     
     plt.show()
     return fig
@@ -730,12 +995,11 @@ def create_session_visualization(all_results_df, session_type="indoor"):
 def main():
     """Run electrode importance analysis for specified session types"""
     # Clear global variables to prevent data accumulation from previous runs
-    global ALL_RESULTS, ELECTRODE_RANKINGS, ELECTRODE_RANK_SUMS, ACCURACY_COMPARISON_RESULTS, INDOOR_OUTDOOR_COMPARISON_RESULTS
+    global ALL_RESULTS, ELECTRODE_RANKINGS, ELECTRODE_RANK_SUMS, ACCURACY_COMPARISON_RESULTS
     ALL_RESULTS.clear()
     ELECTRODE_RANKINGS.clear()
     ELECTRODE_RANK_SUMS.clear()
     ACCURACY_COMPARISON_RESULTS.clear()
-    INDOOR_OUTDOOR_COMPARISON_RESULTS.clear()
     
     session_name = SESSION_TYPES[0] if len(SESSION_TYPES) == 1 else "mixed"
     session_title = session_name.upper()
@@ -752,8 +1016,31 @@ def main():
     print(f"\n📋 Found {len(participants)} participants: {participants}")
     print(f"📋 Session types: {SESSION_TYPES} ({session_title} only)")
     
+    # Check which participants have both indoor and outdoor data
+    participants_with_both = get_participants_with_both_sessions()
+    participants_indoor_only = []
+    participants_outdoor_only = []
+    
+    processed_dir = Path("results/processed")
+    for participant in participants:
+        participant_dir = processed_dir / participant
+        has_indoor = (participant_dir / "indoor_processed-epo.fif").exists()
+        has_outdoor = (participant_dir / "outdoor_processed-epo.fif").exists()
+        
+        if has_indoor and not has_outdoor:
+            participants_indoor_only.append(participant)
+        elif has_outdoor and not has_indoor:
+            participants_outdoor_only.append(participant)
+    
+    print(f"\n📊 DATA AVAILABILITY SUMMARY:")
+    print(f"  Participants with BOTH indoor & outdoor: {len(participants_with_both)} {participants_with_both}")
+    if participants_indoor_only:
+        print(f"  Participants with INDOOR only: {len(participants_indoor_only)} {participants_indoor_only}")
+    if participants_outdoor_only:
+        print(f"  Participants with OUTDOOR only: {len(participants_outdoor_only)} {participants_outdoor_only}")
+    
     total_planned = len(participants) * len(SESSION_TYPES)
-    print(f"📋 Total analyses planned: {total_planned}")
+    print(f"\n📋 Total analyses planned: {total_planned}")
     
     # Run analysis for each participant-session combination
     completed_analyses = 0
@@ -842,13 +1129,109 @@ def main():
     print(f"\n🎨 Generating {session_name}-only visualization...")
     create_session_visualization(all_results_df, session_name)
     
-    # 8 vs 4 Electrode Comparison Analysis
-    print(f"\n🔬 STARTING 8 vs 4 ELECTRODE COMPARISON ANALYSIS")
-    print("=" * 60)
+    # Generate rank sum visualization
+    print(f"\n🎨 Generating {session_name} rank sum visualization...")
+    create_rank_sum_visualization(ELECTRODE_RANK_SUMS, session_name)
+    
+    # ENHANCED 8 vs 4 Electrode Comparison with T-Tests and Outdoor Testing
+    print(f"\n🔬 ENHANCED 8 vs 4 ELECTRODE ANALYSIS WITH STATISTICAL TESTING")
+    print("=" * 80)
+    print("Strategy: Indoor CV training → T-test comparison → Outdoor testing")
+    print("No data leakage: Train on indoor, test on outdoor")
+    print("=" * 80)
     
     # Identify best 4 electrodes based on average ranking
     best_4_electrodes = [electrode for electrode, _ in rank_sorted[:4]]
     print(f"🏆 Best 4 electrodes identified: {best_4_electrodes}")
+    
+    # === ENHANCED ANALYSIS: Only participants with both indoor and outdoor data ===
+    print(f"\n🔬 ENHANCED ANALYSIS: T-test and Outdoor Testing")
+    print("=" * 60)
+    print("For valid indoor→outdoor generalization testing, we need participants with BOTH session types")
+    
+    participants_with_both = get_participants_with_both_sessions()
+    
+    if not participants_with_both:
+        print("⚠ No participants found with both indoor and outdoor data!")
+        print("⚠ Skipping enhanced analysis...")
+        enhanced_comparison_results = []
+        enhanced_completed = 0
+    else:
+        print(f"✅ Found {len(participants_with_both)} participants suitable for enhanced analysis")
+        
+        enhanced_comparison_results = []
+        enhanced_completed = 0
+        
+        for participant in participants_with_both:
+            result = compare_8vs4_electrodes_with_ttest_and_outdoor_testing(participant, best_4_electrodes)
+            if result:
+                enhanced_comparison_results.append(result)
+                enhanced_completed += 1
+        
+        print(f"\n✅ COMPLETED: {enhanced_completed}/{len(participants_with_both)} enhanced comparisons")
+    
+    # Generate enhanced visualization
+    if enhanced_comparison_results:
+        print(f"\n🎨 Generating enhanced comparison visualization...")
+        create_enhanced_comparison_visualization(enhanced_comparison_results)
+        
+        # Save enhanced results to CSV
+        enhanced_df = pd.DataFrame(enhanced_comparison_results)
+        enhanced_path = output_dir / f"enhanced_electrode_comparison_{session_name}.csv"
+        enhanced_df.to_csv(enhanced_path, index=False)
+        print(f"💾 Enhanced comparison results saved to: {enhanced_path}")
+        
+        # Print comprehensive summary
+        print(f"\n📊 ENHANCED COMPARISON SUMMARY:")
+        print("=" * 60)
+        print(f"📋 Participants included: {len(enhanced_df)} (only those with BOTH indoor & outdoor data)")
+        participants_included = [result['participant'] for result in enhanced_comparison_results]
+        print(f"📋 Included participants: {participants_included}")
+        
+        # Indoor CV summary
+        print(f"\n🏠 INDOOR CROSS-VALIDATION RESULTS:")
+        avg_indoor_8 = enhanced_df['indoor_cv_8_mean'].mean()
+        avg_indoor_4 = enhanced_df['indoor_cv_4_mean'].mean()
+        print(f"  8 electrodes: {avg_indoor_8:.3f} ± {enhanced_df['indoor_cv_8_std'].mean():.3f}")
+        print(f"  4 electrodes: {avg_indoor_4:.3f} ± {enhanced_df['indoor_cv_4_std'].mean():.3f}")
+        
+        # Statistical significance summary
+        sig_count = sum(enhanced_df['significant_difference'])
+        print(f"\n📊 STATISTICAL SIGNIFICANCE (T-TESTS):")
+        print(f"  Significant differences found: {sig_count}/{len(enhanced_df)} participants")
+        print(f"  Average p-value: {enhanced_df['p_value'].mean():.4f}")
+        
+        if sig_count > 0:
+            sig_participants = enhanced_df[enhanced_df['significant_difference'] == True]
+            print(f"  Participants with significant differences:")
+            for _, row in sig_participants.iterrows():
+                better = "8-elec" if row['indoor_difference_8_minus_4'] > 0 else "4-elec"
+                print(f"    {row['participant']}: {better} better (p={row['p_value']:.4f})")
+        
+        # Outdoor testing summary
+        outdoor_available = enhanced_df['outdoor_available'].sum()
+        if outdoor_available > 0:
+            outdoor_df = enhanced_df[enhanced_df['outdoor_available'] == True]
+            print(f"\n🌳 OUTDOOR TESTING RESULTS ({outdoor_available} participants):")
+            avg_outdoor_8 = outdoor_df['outdoor_test_8_mean'].mean()
+            avg_outdoor_4 = outdoor_df['outdoor_test_4_mean'].mean()
+            print(f"  8 electrodes: {avg_outdoor_8:.3f} ± {outdoor_df['outdoor_test_8_std'].mean():.3f}")
+            print(f"  4 electrodes: {avg_outdoor_4:.3f} ± {outdoor_df['outdoor_test_4_std'].mean():.3f}")
+            
+            avg_retention_8 = outdoor_df['generalization_ratio_8'].mean() * 100
+            avg_retention_4 = outdoor_df['generalization_ratio_4'].mean() * 100
+            print(f"  8-electrode retention: {avg_retention_8:.1f}% of indoor performance")
+            print(f"  4-electrode retention: {avg_retention_4:.1f}% of indoor performance")
+            
+            # Generalization comparison
+            better_generalizer = "8 electrodes" if avg_retention_8 > avg_retention_4 else "4 electrodes"
+            print(f"  Better generalization: {better_generalizer}")
+        else:
+            print(f"\n🌳 OUTDOOR TESTING: No outdoor data available")
+    
+    # 8 vs 4 Electrode Comparison Analysis (Keep original for comparison)
+    print(f"\n🔬 STARTING ORIGINAL 8 vs 4 ELECTRODE COMPARISON ANALYSIS")
+    print("=" * 60)
     
     # Run 8 vs 4 comparison for each participant
     comparison_completed = 0
@@ -859,11 +1242,11 @@ def main():
                 ACCURACY_COMPARISON_RESULTS.append(comparison_result)
                 comparison_completed += 1
     
-    print(f"\n✅ COMPLETED: {comparison_completed}/{total_planned} 8 vs 4 comparisons")
+    print(f"\n✅ COMPLETED: {comparison_completed}/{total_planned} original 8 vs 4 comparisons")
     
     # Generate 8 vs 4 comparison visualization
     if ACCURACY_COMPARISON_RESULTS:
-        print(f"\n🎨 Generating 8 vs 4 electrode comparison visualization...")
+        print(f"\n🎨 Generating original 8 vs 4 electrode comparison visualization...")
         create_electrode_comparison_visualization(ACCURACY_COMPARISON_RESULTS, session_name)
         
         # Save comparison results to CSV
@@ -895,66 +1278,6 @@ def main():
     else:
         print("❌ No 8 vs 4 comparison results to analyze!")
     
-    # Indoor vs Outdoor Comparison Analysis (4 electrodes)
-    print(f"\n🏠🌳 STARTING INDOOR vs OUTDOOR COMPARISON ANALYSIS (4 electrodes)")
-    print("=" * 60)
-    print(f"🏆 Using best 4 electrodes: {best_4_electrodes}")
-    
-    # Storage for indoor vs outdoor comparison results
-    INDOOR_OUTDOOR_COMPARISON_RESULTS = []
-    
-    # Run indoor vs outdoor comparison for each participant
-    indoor_outdoor_completed = 0
-    for participant in participants:
-        comparison_result = compare_indoor_vs_outdoor_4electrodes(participant, best_4_electrodes)
-        if comparison_result:
-            INDOOR_OUTDOOR_COMPARISON_RESULTS.append(comparison_result)
-            indoor_outdoor_completed += 1
-    
-    print(f"\n✅ COMPLETED: {indoor_outdoor_completed}/{len(participants)} indoor vs outdoor comparisons")
-    
-    # Generate indoor vs outdoor comparison visualization and analysis
-    if INDOOR_OUTDOOR_COMPARISON_RESULTS:
-        print(f"\n🎨 Generating indoor vs outdoor comparison visualization...")
-        create_indoor_outdoor_comparison_visualization(INDOOR_OUTDOOR_COMPARISON_RESULTS)
-        
-        # Save comparison results to CSV
-        indoor_outdoor_df = pd.DataFrame(INDOOR_OUTDOOR_COMPARISON_RESULTS)
-        indoor_outdoor_path = output_dir / f"indoor_outdoor_4electrodes_comparison.csv"
-        indoor_outdoor_df.to_csv(indoor_outdoor_path, index=False)
-        print(f"💾 Indoor vs Outdoor comparison results saved to: {indoor_outdoor_path}")
-        
-        # Print summary statistics
-        print(f"\n📊 INDOOR vs OUTDOOR COMPARISON SUMMARY (4 electrodes):")
-        print("=" * 60)
-        avg_indoor_acc = indoor_outdoor_df['accuracy_indoor'].mean()
-        avg_outdoor_acc = indoor_outdoor_df['accuracy_outdoor'].mean()
-        avg_diff = indoor_outdoor_df['accuracy_difference_indoor_outdoor'].mean()
-        avg_ratio = indoor_outdoor_df['performance_ratio_outdoor_indoor'].mean() * 100
-        
-        print(f"Average indoor accuracy: {avg_indoor_acc:.3f}")
-        print(f"Average outdoor accuracy: {avg_outdoor_acc:.3f}")
-        print(f"Average difference (Indoor-Outdoor): {avg_diff:.3f}")
-        print(f"Outdoor performance: {avg_ratio:.1f}% of indoor performance")
-        
-        # Count participants where outdoor performs nearly as well as indoor (within 10%)
-        outdoor_efficient_count = sum(1 for ratio in indoor_outdoor_df['performance_ratio_outdoor_indoor'] if ratio >= 0.90)
-        print(f"Participants with outdoor ≥90% of indoor performance: {outdoor_efficient_count}/{len(indoor_outdoor_df)}")
-        
-        # Identify best and worst outdoor performers relative to indoor
-        best_outdoor_ratio = indoor_outdoor_df.loc[indoor_outdoor_df['performance_ratio_outdoor_indoor'].idxmax()]
-        worst_outdoor_ratio = indoor_outdoor_df.loc[indoor_outdoor_df['performance_ratio_outdoor_indoor'].idxmin()]
-        print(f"Best outdoor/indoor ratio: {best_outdoor_ratio['participant']} ({best_outdoor_ratio['performance_ratio_outdoor_indoor']:.3f})")
-        print(f"Worst outdoor/indoor ratio: {worst_outdoor_ratio['participant']} ({worst_outdoor_ratio['performance_ratio_outdoor_indoor']:.3f})")
-        
-        # Environment preference analysis
-        indoor_better_count = sum(1 for diff in indoor_outdoor_df['accuracy_difference_indoor_outdoor'] if diff > 0)
-        outdoor_better_count = sum(1 for diff in indoor_outdoor_df['accuracy_difference_indoor_outdoor'] if diff < 0)
-        print(f"Participants performing better indoors: {indoor_better_count}/{len(indoor_outdoor_df)}")
-        print(f"Participants performing better outdoors: {outdoor_better_count}/{len(indoor_outdoor_df)}")
-    else:
-        print("❌ No indoor vs outdoor comparison results to analyze!")
-    
     # Final recommendations
     print(f"\n🎯 {session_title} SESSION RECOMMENDATIONS:")
     print("=" * 60)
@@ -978,10 +1301,9 @@ def main():
     
     print(f"\n✅ {session_title}-ONLY ANALYSIS COMPLETE!")
     print(f"📊 Results: {completed_analyses} {session_name} analyses → ranking → rank sums → visualization")
-    print(f"📊 Comparison: {comparison_completed} 8 vs 4 electrode comparisons → visualization")
-    print(f"📊 Environment: {indoor_outdoor_completed} indoor vs outdoor comparisons → visualization")
+    print(f"📊 Enhanced Analysis: {len(enhanced_comparison_results)} enhanced comparisons → statistical testing → outdoor validation")
     
-    return all_results_df, avg_rankings, ACCURACY_COMPARISON_RESULTS, INDOOR_OUTDOOR_COMPARISON_RESULTS
+    return all_results_df, avg_rankings, enhanced_comparison_results
 
 if __name__ == "__main__":
-    results_df, rankings, comparison_results, indoor_outdoor_results = main()
+    results_df, rankings, enhanced_comparison_results = main()
