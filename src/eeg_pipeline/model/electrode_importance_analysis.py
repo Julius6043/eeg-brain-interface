@@ -10,6 +10,10 @@ import seaborn as sns
 import warnings
 warnings.filterwarnings('ignore')
 
+# Set random seeds for reproducibility
+RANDOM_SEED = 42
+np.random.seed(RANDOM_SEED)
+
 # Konfiguration
 PARTICIPANT = "julian"  # Wähle einen Teilnehmer
 SESSION_TYPE = "outdoor"  # Session type
@@ -165,12 +169,12 @@ def train_and_evaluate_rf(X, y, cv_folds=5):
         min_samples_split=4,
         min_samples_leaf=6,
         class_weight="balanced",
-        random_state=42,
+        random_state=RANDOM_SEED,
         n_jobs=-1,
     )
 
     # Cross-validation
-    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=RANDOM_SEED)
     scores = cross_val_score(rf, X_selected, y, cv=cv, scoring="accuracy", n_jobs=-1)
     
     return scores.mean(), scores.std(), scores
@@ -226,6 +230,16 @@ def plot_electrode_importance(results_df, participant, session_type, baseline_ac
     ax2.set_xticklabels(electrodes, rotation=45)
     ax2.legend()
     ax2.grid(axis='y', alpha=0.3)
+    
+    # Set tighter y-axis limits to better show differences between bars
+    all_accuracies = baseline_acc + reduced_acc
+    min_acc = min(all_accuracies)
+    max_acc = max(all_accuracies)
+    acc_range = max_acc - min_acc
+    
+    # Add 10% padding above and below the data range for better visibility
+    y_padding = max(0.02, acc_range * 0.1)  # At least 2% padding or 10% of range
+    ax2.set_ylim(min_acc - y_padding, max_acc + y_padding)
     
     # Plot 3: Statistical significance visualization
     baseline_std = results_df[results_df['excluded_electrode'] == 'None']['accuracy_std'].iloc[0]
