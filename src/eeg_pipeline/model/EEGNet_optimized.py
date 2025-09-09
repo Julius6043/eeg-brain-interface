@@ -55,15 +55,15 @@ warnings.filterwarnings("ignore")
 
 class AdvancedEEGPreprocessor:
     """Erweiterte EEG-Präprozessierung für bessere Signal-Qualität.
-    
+
     Diese Klasse implementiert fortgeschrittene Präprozessierungsmethoden,
     die speziell für EEG-Signale entwickelt wurden:
-    
+
     1. Spektrale Normalisierung basierend auf Frequenzbändern
     2. Statistische Outlier-Erkennung und -Korrektur
     3. Robuste Skalierung für bessere Generalisierung
     4. Adaptive Baseline-Korrektur
-    
+
     Die Methoden sind darauf ausgelegt, Artefakte zu reduzieren und
     die Signal-zu-Rausch-Verhältnis zu verbessern, was zu besseren
     Machine Learning Ergebnissen führt.
@@ -71,7 +71,7 @@ class AdvancedEEGPreprocessor:
 
     def __init__(self, sfreq: float = 250.0):
         """Initialisiert den erweiterten EEG-Präprozessor.
-        
+
         Parameter
         ---------
         sfreq : float, default=250.0
@@ -86,11 +86,11 @@ class AdvancedEEGPreprocessor:
 
     def apply_spectral_normalization(self, data: np.ndarray) -> np.ndarray:
         """Normalisiert EEG-Daten basierend auf spektraler Power.
-        
+
         Diese Methode analysiert die Frequenzzusammensetzung jedes EEG-Kanals
         und normalisiert die Signale basierend auf der Power in wichtigen
         Frequenzbändern (Alpha: 8-13 Hz, Beta: 13-30 Hz).
-        
+
         Warum spektrale Normalisierung?
         - EEG-Signale haben unterschiedliche Power in verschiedenen Frequenzbändern
         - Alpha-Rhythmus (8-13 Hz) ist oft dominant bei geschlossenen Augen
@@ -154,14 +154,14 @@ class AdvancedEEGPreprocessor:
         self, data: np.ndarray, threshold_factor: float = 3.0
     ) -> np.ndarray:
         """Entfernt Artefakte basierend auf statistischen Outliers.
-        
+
         Diese Methode identifiziert und korrigiert Artefakte in EEG-Signalen
         mithilfe robuster statistischer Methoden. Artefakte können entstehen durch:
         - Augenbewegungen (EOG-Artefakte)
-        - Muskelaktivität (EMG-Artefakte) 
+        - Muskelaktivität (EMG-Artefakte)
         - Elektrische Störungen
         - Bewegungsartefakte
-        
+
         Strategie:
         1. Berechnung der RMS (Root Mean Square) Power pro Epoche
         2. Outlier-Erkennung mit MAD (Median Absolute Deviation)
@@ -196,7 +196,7 @@ class AdvancedEEGPreprocessor:
             median_power = np.median(rms_power)
             # MAD = Median der absoluten Abweichungen vom Median
             mad = np.median(np.abs(rms_power - median_power))
-            
+
             # Schwellwert für Outlier-Klassifikation
             # Epochen mit RMS > threshold werden als Artefakte betrachtet
             threshold = median_power + threshold_factor * mad
@@ -231,25 +231,25 @@ class AdvancedEEGPreprocessor:
 
 class AttentionEEGNet(nn.Module):
     """EEGNet mit Attention-Mechanismus für bessere Performance.
-    
+
     Diese erweiterte Version des klassischen EEGNet implementiert:
-    
-    1. **Multi-Scale Temporal Convolutions**: 
+
+    1. **Multi-Scale Temporal Convolutions**:
        - Verschiedene Kernel-Größen erfassen Muster unterschiedlicher Zeitskalen
        - Kurze Kernel (16): Schnelle Ereignisse (50+ Hz)
        - Mittlere Kernel (32): Alpha/Beta-Rhythmen (8-30 Hz)
        - Lange Kernel (64): Langsame Oszillationen (<8 Hz)
-    
+
     2. **Spatial Attention Mechanism**:
        - Automatische Gewichtung wichtiger Zeitfenster
        - Adaptive Fokussierung auf relevante EEG-Features
        - Reduziert irrelevante Hintergrundrauschen
-    
+
     3. **Optimierte Architektur**:
        - Batch Normalization für stabile Trainings-Dynamik
        - Dropout für Overfitting-Reduktion
        - ELU-Aktivierung (bessere Gradienten als ReLU)
-    
+
     Die Architektur folgt dem bewährten EEGNet-Paradigma:
     Block 1: Temporal → Spatial Feature Extraction
     Block 2: Multi-Scale Separable Convolutions
@@ -269,12 +269,12 @@ class AttentionEEGNet(nn.Module):
         pool_mode: str = "mean",
     ):
         """Initialisiert das Attention-erweiterte EEGNet.
-        
+
         Parameter
         ---------
         n_chans : int
             Anzahl der EEG-Kanäle (z.B. 8, 16, 32, 64)
-        n_outputs : int 
+        n_outputs : int
             Anzahl der Ausgabe-Klassen (hier: 3 für n-back Schwierigkeiten)
         n_times : int
             Anzahl der Zeitpunkte pro Epoche (abhängig von Sampling-Rate und Fensterlänge)
@@ -304,7 +304,7 @@ class AttentionEEGNet(nn.Module):
         self.n_times = n_times
 
         # === BLOCK 1: TEMPORAL UND SPATIAL FEATURE EXTRACTION ===
-        
+
         # Temporal Convolution: Erfasst zeitliche Muster
         # Input: (batch, 1, n_chans, n_times)
         # Output: (batch, F1, n_chans, n_times)
@@ -315,7 +315,7 @@ class AttentionEEGNet(nn.Module):
         self.batchnorm1 = nn.BatchNorm2d(F1)
 
         # Depthwise Spatial Convolution: Kombiniert Informationen zwischen Kanälen
-        # Input: (batch, F1, n_chans, n_times)  
+        # Input: (batch, F1, n_chans, n_times)
         # Output: (batch, F1*D, 1, n_times)
         # groups=F1 bedeutet: jeder Input-Kanal wird separat verarbeitet
         self.conv_spatial = nn.Conv2d(F1, F1 * D, (n_chans, 1), groups=F1)
@@ -323,29 +323,29 @@ class AttentionEEGNet(nn.Module):
         self.dropout1 = nn.Dropout(drop_prob)
 
         # === BLOCK 2: MULTI-SCALE TEMPORAL FEATURES ===
-        
+
         # Drei verschiedene Kernel-Größen für Multi-Scale Feature Extraction
         # Jede Größe erfasst Muster auf verschiedenen Zeitskalen
-        
+
         # Kurze Zeitskala (16 samples): Schnelle Ereignisse, Gamma-Rhythmen
         self.conv_sep1 = nn.Conv2d(F1 * D, F2, (1, 16), padding=(0, 8))
-        # Mittlere Zeitskala (32 samples): Alpha/Beta-Rhythmen  
+        # Mittlere Zeitskala (32 samples): Alpha/Beta-Rhythmen
         self.conv_sep2 = nn.Conv2d(F1 * D, F2, (1, 32), padding=(0, 16))
         # Lange Zeitskala (64 samples): Theta/Delta-Rhythmen
         self.conv_sep3 = nn.Conv2d(F1 * D, F2, (1, 64), padding=(0, 32))
 
         # Batch Normalization für alle drei Feature-Streams
         # F2 * 3 weil wir drei parallel verarbeitete Feature-Maps haben
-        self.batchnorm3 = nn.BatchNorm2d(F2 * 3)  
+        self.batchnorm3 = nn.BatchNorm2d(F2 * 3)
         self.dropout2 = nn.Dropout(drop_prob)
 
         # === BLOCK 3: ATTENTION MECHANISM ===
-        
+
         # Spatial Attention: Lernt, welche Zeitfenster wichtig sind
         attention_features = F2 * 3
         self.attention = nn.Sequential(
             # Global Average Pooling über räumliche Dimension (Kanäle → 1)
-            nn.AdaptiveAvgPool2d((1, None)),  
+            nn.AdaptiveAvgPool2d((1, None)),
             # Kompression: Reduziere Feature-Dimensionalität um Faktor 4
             nn.Conv2d(attention_features, attention_features // 4, 1),
             nn.ReLU(),
@@ -356,21 +356,21 @@ class AttentionEEGNet(nn.Module):
         )
 
         # === BLOCK 4: CLASSIFICATION ===
-        
+
         # Adaptive Pooling für einheitliche Feature-Größe
         # Unabhängig von Input-Zeitlänge → (1, 8) Features
         self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 8))
 
         # Multi-Layer Classifier mit progressiver Dimensionsreduktion
         self.classifier = nn.Sequential(
-            nn.Flatten(),                           # (batch, F2*3*8)
-            nn.Linear(F2 * 3 * 8, 128),           # Erste versteckte Schicht
+            nn.Flatten(),  # (batch, F2*3*8)
+            nn.Linear(F2 * 3 * 8, 128),  # Erste versteckte Schicht
             nn.ReLU(),
             nn.Dropout(drop_prob),
-            nn.Linear(128, 64),                    # Zweite versteckte Schicht  
+            nn.Linear(128, 64),  # Zweite versteckte Schicht
             nn.ReLU(),
-            nn.Dropout(drop_prob * 0.5),          # Reduziertes Dropout
-            nn.Linear(64, n_outputs),             # Ausgabe: n-back Klassen
+            nn.Dropout(drop_prob * 0.5),  # Reduziertes Dropout
+            nn.Linear(64, n_outputs),  # Ausgabe: n-back Klassen
         )
 
         # Initialisiere Gewichte mit optimierten Strategien
@@ -378,19 +378,19 @@ class AttentionEEGNet(nn.Module):
 
     def _initialize_weights(self):
         """Verbesserte Gewichts-Initialisierung für EEG-Daten.
-        
+
         Verwendet verschiedene Initialisierungsstrategien je nach Layer-Typ:
-        
+
         1. **Convolutional Layers**: Kaiming Normal Initialization
            - Entwickelt für ReLU-ähnliche Aktivierungen (ELU)
            - Berücksichtigt Fan-Out für optimale Gradienten-Propagation
            - Verhindert exploding/vanishing gradients
-        
+
         2. **Batch Normalization**: Standard-Initialisierung
            - Gewichte = 1 (keine Skalierung)
            - Bias = 0 (keine Verschiebung)
            - Lässt BN die optimale Normalisierung lernen
-        
+
         3. **Linear Layers**: Kleine normale Verteilung
            - Gewichte ~ N(0, 0.01) für stabile Initialisierung
            - Bias = 0 für symmetrische Startbedingungen
@@ -406,7 +406,7 @@ class AttentionEEGNet(nn.Module):
             elif isinstance(m, nn.BatchNorm2d):
                 # Standard BN-Initialisierung
                 nn.init.constant_(m.weight, 1)  # Keine anfängliche Skalierung
-                nn.init.constant_(m.bias, 0)    # Keine anfängliche Verschiebung
+                nn.init.constant_(m.bias, 0)  # Keine anfängliche Verschiebung
             elif isinstance(m, nn.Linear):
                 # Kleine Normalverteilung für Fully Connected Layers
                 nn.init.normal_(m.weight, 0, 0.01)  # N(μ=0, σ=0.01)
@@ -414,22 +414,22 @@ class AttentionEEGNet(nn.Module):
 
     def forward(self, x):
         """Forward Pass durch das Attention-EEGNet.
-        
+
         Implementiert den vollständigen Datenfluss von Input zu Output:
-        
+
         Datenfluss-Schritte:
         1. Input-Reformatierung für CNN-Verarbeitung
-        2. Block 1: Temporal + Spatial Feature Extraction  
+        2. Block 1: Temporal + Spatial Feature Extraction
         3. Block 2: Multi-Scale Temporal Processing
         4. Block 3: Attention-Mechanismus
         5. Block 4: Classification
-        
+
         Parameter
         ---------
         x : torch.Tensor
             Input-Tensor mit EEG-Daten
             Shape: (batch_size, n_channels, n_times) oder (batch_size, 1, n_channels, n_times)
-        
+
         Returns
         -------
         torch.Tensor
@@ -440,77 +440,138 @@ class AttentionEEGNet(nn.Module):
         # EEGNet erwartet 4D Input: (batch, 1, n_chans, n_times)
         # Falls 3D Input: Füge Kanal-Dimension hinzu
         if x.dim() == 3:
-            x = x.unsqueeze(1)  # (batch, n_chans, n_times) → (batch, 1, n_chans, n_times)
+            x = x.unsqueeze(
+                1
+            )  # (batch, n_chans, n_times) → (batch, 1, n_chans, n_times)
 
         # === BLOCK 1: TEMPORAL UND SPATIAL FEATURES ===
-        
+
         # Temporal Convolution: Erfasse zeitliche Muster
-        x = self.conv_temporal(x)              # (batch, F1, n_chans, n_times)
-        x = self.batchnorm1(x)                 # Normalisiere Feature-Aktivierungen
-        
+        x = self.conv_temporal(x)  # (batch, F1, n_chans, n_times)
+        x = self.batchnorm1(x)  # Normalisiere Feature-Aktivierungen
+
         # Spatial Convolution: Kombiniere Kanal-Informationen
-        x = self.conv_spatial(x)               # (batch, F1*D, 1, n_times)
-        x = self.batchnorm2(x)                 # Stabilisiere Training
-        x = F.elu(x)                          # ELU-Aktivierung (bessere Gradienten als ReLU)
-        x = F.avg_pool2d(x, (1, 4))           # Zeitliche Dimensionsreduktion
-        x = self.dropout1(x)                   # Regularisierung
+        x = self.conv_spatial(x)  # (batch, F1*D, 1, n_times)
+        x = self.batchnorm2(x)  # Stabilisiere Training
+        x = F.elu(x)  # ELU-Aktivierung (bessere Gradienten als ReLU)
+        x = F.avg_pool2d(x, (1, 4))  # Zeitliche Dimensionsreduktion
+        x = self.dropout1(x)  # Regularisierung
 
         # === BLOCK 2: MULTI-SCALE TEMPORAL FEATURES ===
-        
+
         # Drei parallele Convolution-Pfade mit verschiedenen Kernel-Größen
-        x1 = self.conv_sep1(x)                # Kurze Zeitskala (16 samples)
-        x2 = self.conv_sep2(x)                # Mittlere Zeitskala (32 samples)  
-        x3 = self.conv_sep3(x)                # Lange Zeitskala (64 samples)
+        x1 = self.conv_sep1(x)  # Kurze Zeitskala (16 samples)
+        x2 = self.conv_sep2(x)  # Mittlere Zeitskala (32 samples)
+        x3 = self.conv_sep3(x)  # Lange Zeitskala (64 samples)
 
         # Kombiniere Multi-Scale Features entlang der Feature-Dimension
-        x = torch.cat([x1, x2, x3], dim=1)    # (batch, F2*3, 1, n_times_reduced)
-        x = self.batchnorm3(x)                 # Normalisiere kombinierte Features
-        x = F.elu(x)                          # Nicht-lineare Aktivierung
+        x = torch.cat([x1, x2, x3], dim=1)  # (batch, F2*3, 1, n_times_reduced)
+        x = self.batchnorm3(x)  # Normalisiere kombinierte Features
+        x = F.elu(x)  # Nicht-lineare Aktivierung
 
         # === BLOCK 3: ATTENTION MECHANISM ===
-        
+
         # Berechne Attention-Gewichte für jeden Zeitpunkt
-        attention_weights = self.attention(x)   # (batch, F2*3, 1, n_times_reduced)
+        attention_weights = self.attention(x)  # (batch, F2*3, 1, n_times_reduced)
         # Element-wise Multiplikation: Gewichte × Features
-        x = x * attention_weights              # Fokussiere auf wichtige Zeitfenster
+        x = x * attention_weights  # Fokussiere auf wichtige Zeitfenster
 
         # === BLOCK 4: CLASSIFICATION ===
-        
+
         # Weitere Dimensionsreduktion durch Pooling
-        x = F.avg_pool2d(x, (1, 8))           # Reduziere Zeitdimension
-        x = self.dropout2(x)                   # Regularisierung
-        
+        x = F.avg_pool2d(x, (1, 8))  # Reduziere Zeitdimension
+        x = self.dropout2(x)  # Regularisierung
+
         # Adaptive Pooling für einheitliche Feature-Größe
-        x = self.adaptive_pool(x)              # (batch, F2*3, 1, 8)
+        x = self.adaptive_pool(x)  # (batch, F2*3, 1, 8)
 
         # Classification durch Fully Connected Layers
-        x = self.classifier(x)                 # (batch, n_outputs)
+        x = self.classifier(x)  # (batch, n_outputs)
 
         return x
 
 
+class RobustValidationStrategy:
+    """Robuste Validierungsstrategie für EEG-Daten mit Anti-Overfitting Maßnahmen."""
+
+    def __init__(self, patience_factor: float = 1.5, min_improvement: float = 0.001):
+        self.patience_factor = patience_factor
+        self.min_improvement = min_improvement
+
+    def create_temporal_splits(
+        self, epochs: mne.Epochs, n_splits: int = 5
+    ) -> List[Tuple]:
+        """Erstellt zeitbasierte Splits die Data Leakage minimieren."""
+        X, y = self._extract_data(epochs)
+
+        # Sortiere nach Zeit
+        time_order = np.arange(len(epochs))
+
+        splits = []
+        split_size = len(epochs) // n_splits
+
+        for i in range(n_splits):
+            # Überlappende Validierungssets vermeiden
+            val_start = i * split_size
+            val_end = min((i + 1) * split_size, len(epochs))
+
+            # Puffer um Validation Set
+            buffer = max(10, split_size // 10)
+
+            train_indices = np.concatenate(
+                [
+                    time_order[: max(0, val_start - buffer)],
+                    time_order[min(len(epochs), val_end + buffer) :],
+                ]
+            )
+            val_indices = time_order[val_start:val_end]
+
+            if len(train_indices) > 50 and len(val_indices) > 10:
+                splits.append((train_indices, val_indices))
+
+        return splits
+
+    def _extract_data(self, epochs: mne.Epochs) -> Tuple[np.ndarray, np.ndarray]:
+        """Extrahiert Daten und Labels aus Epochen."""
+        X = epochs.get_data()
+        event_ids = epochs.events[:, 2]
+
+        y = []
+        for event_id in event_ids:
+            if event_id == 2:  # 1-back
+                y.append(0)
+            elif event_id == 3:  # 2-back
+                y.append(1)
+            elif event_id == 4:  # 3-back
+                y.append(2)
+            else:
+                raise ValueError(f"Unexpected event ID {event_id}")
+
+        return X, np.array(y)
+
+
 class OptimizedEEGNetTrainer:
     """Optimierter EEGNet Trainer mit erweiterten Features.
-    
+
     Diese Klasse orchestriert das komplette Training eines EEGNet-Modells
     für n-back Klassifikation mit folgenden Optimierungen:
-    
+
     **Training-Strategien:**
     - Cross-Validation für robuste Performance-Bewertung
     - Label Smoothing zur Reduktion von Overconfidence
     - Advanced Learning Rate Scheduling
     - Gradient Clipping für stabile Konvergenz
     - Early Stopping zur Overfitting-Vermeidung
-    
+
     **Daten-Optimierungen:**
     - Temporal Splitting (verhindert Data Leakage)
     - Class-balanced Sampling
     - Erweiterte EEG-Präprozessierung
     - Robust Scaling für bessere Generalisierung
-    
+
     **Architektur-Features:**
     - Multi-Scale Temporal Convolutions
-    - Spatial Attention Mechanism  
+    - Spatial Attention Mechanism
     - Optimierte Hyperparameter für EEG-Daten
     - Ensemble-basierte Vorhersagen
     """
@@ -520,82 +581,84 @@ class OptimizedEEGNetTrainer:
         n_chans: int = 8,
         n_outputs: int = 3,
         input_window_samples: int = None,
-        F1: int = 12,
-        D: int = 3,
-        F2: int = 24,
+        F1: int = 8,  # Reduziert von 12 für weniger Overfitting
+        D: int = 2,  # Reduziert von 3 für stabilere Performance
+        F2: int = 16,  # Reduziert von 24 für bessere Generalisierung
         kernel_length: int = 64,
-        drop_prob: float = 0.3,
-        batch_size: int = 32,
-        lr: float = 0.002,
-        weight_decay: float = 0.001,
-        n_epochs: int = 150,
+        drop_prob: float = 0.5,  # Erhöht von 0.3 für mehr Regularisierung
+        batch_size: int = 16,  # Kleiner für stabileres Training
+        lr: float = 0.0005,  # Deutlich niedriger für stabilere Konvergenz
+        weight_decay: float = 0.01,  # Höher für mehr Regularisierung
+        n_epochs: int = 300,  # Mehr Epochen mit kleiner LR
         device: str = "auto",
         use_label_smoothing: bool = True,
-        label_smoothing_factor: float = 0.1,
+        label_smoothing_factor: float = 0.15,  # Leicht erhöht
         use_attention: bool = True,
+        use_gradient_clipping: bool = True,
+        gradient_clip_value: float = 0.5,  # Neu: Gradient Clipping
     ):
         """Initialisiert optimierten EEGNet Trainer.
-        
+
         Parameter
         ---------
         n_chans : int, default=8
             Anzahl der EEG-Kanäle im Input
             Typische Werte: 8 (mobile EEG), 32 (klinisch), 64 (Forschung)
-            
-        n_outputs : int, default=3  
+
+        n_outputs : int, default=3
             Anzahl der Zielklassen (1-back, 2-back, 3-back)
-            
+
         input_window_samples : int, optional
             Länge der Zeitfenster in Samples
             Wird automatisch aus Daten bestimmt wenn None
-            
+
         F1 : int, default=12
             Anzahl temporaler Filter im ersten Block
             Höhere Werte = mehr Lernkapazität, mehr Parameter
-            
+
         D : int, default=3
-            Tiefe der Depthwise Convolution  
+            Tiefe der Depthwise Convolution
             Bestimmt räumliche Komplexität (F1 * D = räumliche Features)
-            
+
         F2 : int, default=24
             Anzahl separabler Filter im zweiten Block
             Sollte ≈ F1 * D für optimale Performance
-            
+
         kernel_length : int, default=64
             Temporale Kernel-Größe in Samples
             Größere Werte erfassen längere zeitliche Abhängigkeiten
-            
+
         drop_prob : float, default=0.3
             Dropout-Wahrscheinlichkeit für Regularisierung
             0.2-0.5 typisch für EEG (höher als Computer Vision)
-            
+
         batch_size : int, default=32
             Mini-Batch Größe für Training
             Kleinere Batches oft besser für EEG (16-64)
-            
+
         lr : float, default=0.002
             Initiale Lernrate für Optimizer
             EEG benötigt oft niedrigere LR als andere Domänen
-            
+
         weight_decay : float, default=0.001
             L2-Regularisierung für Gewichte
             Verhindert Overfitting bei kleinen Datensätzen
-            
+
         n_epochs : int, default=150
             Maximale Anzahl Trainings-Epochen
             Early Stopping verhindert unnötig langes Training
-            
+
         device : str, default="auto"
             Compute-Device ("cuda", "cpu", oder "auto")
             "auto" wählt automatisch GPU falls verfügbar
-            
+
         use_label_smoothing : bool, default=True
             Aktiviert Label Smoothing in Loss-Function
             Reduziert Overconfidence und verbessert Generalisierung
-            
+
         label_smoothing_factor : float, default=0.1
             Stärke des Label Smoothing (0.0 = aus, 0.1-0.2 typisch)
-            
+
         use_attention : bool, default=True
             Verwendet Attention-erweiterte Architektur
             Meist bessere Performance als Standard-EEGNet
@@ -612,6 +675,8 @@ class OptimizedEEGNetTrainer:
         self.use_label_smoothing = use_label_smoothing
         self.label_smoothing_factor = label_smoothing_factor
         self.use_attention = use_attention
+        self.use_gradient_clipping = use_gradient_clipping
+        self.gradient_clip_value = gradient_clip_value
 
         # Device-Auswahl mit automatischer GPU-Erkennung
         if device == "auto":
@@ -622,7 +687,9 @@ class OptimizedEEGNetTrainer:
         print(f"Using device: {self.device}")
         if self.device == "cuda":
             print(f"GPU: {torch.cuda.get_device_name()}")
-            print(f"CUDA Memory: {torch.cuda.get_device_properties(0).total_memory // 1e9:.1f} GB")
+            print(
+                f"CUDA Memory: {torch.cuda.get_device_properties(0).total_memory // 1e9:.1f} GB"
+            )
 
         # Model-Parameter für Architektur-Erstellung
         self.model_params = {
@@ -637,17 +704,19 @@ class OptimizedEEGNetTrainer:
         }
 
         # Training-Objekte (werden später initialisiert)
-        self.model = None                           # Das neuronale Netz
-        self.clf = None                            # Skorch-Wrapper für Training
-        self.label_encoder = LabelEncoder()        # Konvertiert Labels zu Integer
-        self.preprocessor = AdvancedEEGPreprocessor()  # EEG-spezifische Präprozessierung
-        
+        self.model = None  # Das neuronale Netz
+        self.clf = None  # Skorch-Wrapper für Training
+        self.label_encoder = LabelEncoder()  # Konvertiert Labels zu Integer
+        self.preprocessor = (
+            AdvancedEEGPreprocessor()
+        )  # EEG-spezifische Präprozessierung
+
         # Klassen-Namen für bessere Interpretation
         self.class_names = ["n-back 1", "n-back 2", "n-back 3"]
 
         # Performance-Tracking für Analyse
-        self.training_history = []              # Training-Verlauf
-        self.cv_scores = []                    # Cross-Validation Ergebnisse
+        self.training_history = []  # Training-Verlauf
+        self.cv_scores = []  # Cross-Validation Ergebnisse
 
     def load_and_preprocess_epochs(self, fif_path: Path) -> mne.Epochs:
         """Lädt und präprozessiert EEG-Epochen mit erweiterten Methoden."""
@@ -734,25 +803,54 @@ class OptimizedEEGNetTrainer:
         else:
             criterion = nn.CrossEntropyLoss
 
-        # Erweiterte Callbacks
+        # Erweiterte Callbacks für stabileres Training
         callbacks = [
-            EarlyStopping(patience=20, monitor="valid_loss", load_best=True),
+            EarlyStopping(
+                patience=30,  # Erhöht von 20 für mehr Geduld
+                monitor="valid_loss",
+                load_best=True,
+                threshold=0.001,  # Nur stoppen bei signifikanter Verbesserung
+            ),
             LRScheduler(
                 "ReduceLROnPlateau",
                 monitor="valid_loss",
-                patience=8,
-                factor=0.5,
-                min_lr=1e-6,
+                patience=15,  # Erhöht von 8 für weniger aggressive LR-Reduktion
+                factor=0.7,  # Weniger aggressive Reduktion (war 0.5)
+                min_lr=1e-7,  # Niedrigere minimale LR
+                verbose=True,
             ),
-            Checkpoint(monitor="valid_acc", load_best=True),
+            Checkpoint(
+                monitor="valid_acc",
+                load_best=True,
+                f_params="best_model_params.pt",
+                f_optimizer="best_optimizer_state.pt",
+            ),
         ]
 
-        # Erweitere Callbacks mit Gradient Clipping
-        from skorch.callbacks import GradientNormClipping
+        # Gradient Clipping für stabilere Konvergenz
+        if self.use_gradient_clipping:
+            from skorch.callbacks import GradientNormClipping
 
-        callbacks.append(GradientNormClipping(gradient_clip_value=1.0))
+            callbacks.append(
+                GradientNormClipping(gradient_clip_value=self.gradient_clip_value)
+            )
+            print(f"Using gradient clipping with value: {self.gradient_clip_value}")
 
-        # Erstelle optimierten EEGClassifier
+        # Erweiterte Callbacks
+        from skorch.callbacks import BatchScoring
+        from sklearn.metrics import balanced_accuracy_score
+
+        # Balanced Accuracy für unbalancierte Klassen
+        callbacks.append(
+            BatchScoring(
+                balanced_accuracy_score,
+                name="balanced_acc",
+                lower_is_better=False,
+                on_train=True,
+            )
+        )
+
+        # Erstelle optimierten EEGClassifier mit robusteren Einstellungen
         clf = EEGClassifier(
             model,
             criterion=criterion,
@@ -761,6 +859,7 @@ class OptimizedEEGNetTrainer:
             optimizer__weight_decay=self.weight_decay,
             optimizer__betas=(0.9, 0.999),
             optimizer__eps=1e-8,
+            optimizer__amsgrad=True,  # Stabilere Variante von AdamW
             batch_size=self.batch_size,
             max_epochs=self.n_epochs,
             device=self.device,
@@ -769,33 +868,46 @@ class OptimizedEEGNetTrainer:
             verbose=1,
             iterator_train__shuffle=True,
             iterator_valid__shuffle=False,
+            # Erweiterte Einstellungen für Stabilität
+            iterator_train__num_workers=0,  # Verhindert Multiprocessing-Probleme
+            iterator_valid__num_workers=0,
         )
 
         return clf
 
     def cross_validate_performance(self, epochs: mne.Epochs, n_splits: int = 5) -> Dict:
-        """Führt Cross-Validation für robuste Performance-Bewertung durch."""
+        """Führt robuste Cross-Validation mit zeitbasierten Splits durch."""
 
-        print(f"Performing {n_splits}-fold cross-validation...")
+        print(f"Performing {n_splits}-fold robust cross-validation...")
+
+        # Verwende robuste Validierungsstrategie
+        validator = RobustValidationStrategy()
+        splits = validator.create_temporal_splits(epochs, n_splits)
+
+        if len(splits) < n_splits:
+            print(f"Warning: Only {len(splits)} splits possible instead of {n_splits}")
 
         # Extrahiere Daten
         X, y = self.extract_labels_from_epochs(epochs)
 
-        # Stratified K-Fold für balanced splits
-        skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-
         cv_scores = []
         fold_results = []
 
-        for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
-            print(f"\nFold {fold + 1}/{n_splits}")
+        for fold, (train_idx, val_idx) in enumerate(splits):
+            print(f"\nFold {fold + 1}/{len(splits)}")
             print("-" * 30)
 
             # Split data
             X_train, X_val = X[train_idx], X[val_idx]
             y_train, y_val = y[train_idx], y[val_idx]
 
-            # Create model for this fold
+            # Prüfe Klassenbalance pro Fold
+            train_balance = np.bincount(y_train) / len(y_train)
+            val_balance = np.bincount(y_val) / len(y_val)
+            print(f"Training balance: {train_balance}")
+            print(f"Validation balance: {val_balance}")
+
+            # Create model for this fold mit reduzierter Komplexität
             clf = self.create_optimized_model()
 
             # Train
@@ -810,36 +922,63 @@ class OptimizedEEGNetTrainer:
             val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
 
             clf.train_split = predefined_split(val_dataset)
-            clf.fit(train_dataset, y=None)
 
-            # Evaluate
-            y_pred = clf.predict(X_val_tensor)
-            accuracy = (y_val == y_pred).mean()
+            try:
+                clf.fit(train_dataset, y=None)
 
-            cv_scores.append(accuracy)
-            fold_results.append(
-                {
-                    "fold": fold + 1,
-                    "accuracy": accuracy,
-                    "y_true": y_val,
-                    "y_pred": y_pred,
-                }
-            )
+                # Evaluate
+                y_pred = clf.predict(X_val_tensor)
+                accuracy = (y_val == y_pred).mean()
 
-            print(f"Fold {fold + 1} accuracy: {accuracy:.3f}")
+                # Berechne zusätzliche Metriken
+                from sklearn.metrics import balanced_accuracy_score, f1_score
+
+                balanced_acc = balanced_accuracy_score(y_val, y_pred)
+                f1 = f1_score(y_val, y_pred, average="weighted")
+
+                cv_scores.append(accuracy)
+                fold_results.append(
+                    {
+                        "fold": fold + 1,
+                        "accuracy": accuracy,
+                        "balanced_accuracy": balanced_acc,
+                        "f1_score": f1,
+                        "y_true": y_val,
+                        "y_pred": y_pred,
+                        "train_size": len(y_train),
+                        "val_size": len(y_val),
+                    }
+                )
+
+                print(f"Fold {fold + 1} accuracy: {accuracy:.3f}")
+                print(f"Fold {fold + 1} balanced accuracy: {balanced_acc:.3f}")
+                print(f"Fold {fold + 1} F1-score: {f1:.3f}")
+
+            except Exception as e:
+                print(f"Fold {fold + 1} failed: {e}")
+                continue
+
+        if len(cv_scores) == 0:
+            print("ERROR: All folds failed!")
+            return {"error": "All cross-validation folds failed"}
 
         cv_mean = np.mean(cv_scores)
         cv_std = np.std(cv_scores)
+        cv_median = np.median(cv_scores)
 
-        print(f"\nCross-Validation Results:")
+        print(f"\nRobust Cross-Validation Results:")
         print(f"Mean accuracy: {cv_mean:.3f} ± {cv_std:.3f}")
+        print(f"Median accuracy: {cv_median:.3f}")
         print(f"Individual fold scores: {[f'{score:.3f}' for score in cv_scores]}")
+        print(f"Stability (1 - CV): {1 - cv_std/cv_mean:.3f}")
 
         return {
             "cv_scores": cv_scores,
             "cv_mean": cv_mean,
             "cv_std": cv_std,
+            "cv_median": cv_median,
             "fold_results": fold_results,
+            "stability_score": 1 - cv_std / cv_mean if cv_mean > 0 else 0,
         }
 
     def extract_labels_from_epochs(
@@ -964,7 +1103,7 @@ class OptimizedEEGNetTrainer:
     def prepare_braindecode_dataset(
         self, epochs: mne.Epochs, train_size: float = 0.8
     ) -> Tuple:
-        """Bereitet Braindecode-Dataset vor (identisch zu vorheriger Version)."""
+        """Bereitet Braindecode-Dataset mit verbesserter Aufteilung vor."""
 
         X, y = self.extract_labels_from_epochs(epochs)
 
@@ -972,7 +1111,7 @@ class OptimizedEEGNetTrainer:
             self.input_window_samples = X.shape[2]
             self.model_params["n_times"] = self.input_window_samples
 
-        # Klassenweise zeitbasierte Aufteilung (identisch zu vorheriger Version)
+        # Verbesserte zeitbasierte Aufteilung mit mehr Puffer
         epoch_times = np.arange(len(epochs))
         class_indices = {}
         for class_idx in range(3):
@@ -985,7 +1124,9 @@ class OptimizedEEGNetTrainer:
             sorted_indices = indices[np.argsort(epoch_times[indices])]
             n_class = len(sorted_indices)
             n_train_class = int(n_class * train_size)
-            buffer_size = max(2, int(n_class * 0.1))
+
+            # Vergrößere Puffer zwischen Train/Val für weniger Data Leakage
+            buffer_size = max(5, int(n_class * 0.15))  # Größerer Puffer
 
             train_end = max(1, n_train_class - buffer_size // 2)
             class_train_indices = sorted_indices[:train_end]
@@ -993,16 +1134,22 @@ class OptimizedEEGNetTrainer:
             valid_start = min(n_class - 1, n_train_class + buffer_size // 2)
             class_valid_indices = sorted_indices[valid_start:]
 
-            if len(class_train_indices) == 0:
-                class_train_indices = sorted_indices[:1]
-            if len(class_valid_indices) == 0:
-                class_valid_indices = sorted_indices[-1:]
+            # Sicherheitscheck für minimale Anzahl
+            if len(class_train_indices) < 3:
+                class_train_indices = sorted_indices[: max(3, len(sorted_indices) // 2)]
+            if len(class_valid_indices) < 2:
+                class_valid_indices = sorted_indices[
+                    -max(2, len(sorted_indices) // 4) :
+                ]
 
             train_indices.extend(class_train_indices)
             valid_indices.extend(class_valid_indices)
 
         train_indices = np.array(train_indices)
         valid_indices = np.array(valid_indices)
+
+        # Entferne Überlappungen (falls vorhanden)
+        valid_indices = valid_indices[~np.isin(valid_indices, train_indices)]
 
         epochs_train = epochs[train_indices]
         epochs_valid = epochs[valid_indices]
@@ -1017,6 +1164,12 @@ class OptimizedEEGNetTrainer:
         print(f"Validation set: {len(epochs_valid)} epochs")
         print(f"Training label distribution: {np.bincount(y_train_encoded)}")
         print(f"Validation label distribution: {np.bincount(y_valid_encoded)}")
+
+        # Prüfe auf Klassenbalance
+        train_balance = np.bincount(y_train_encoded) / len(y_train_encoded)
+        valid_balance = np.bincount(y_valid_encoded) / len(y_valid_encoded)
+        print(f"Training balance: {train_balance}")
+        print(f"Validation balance: {valid_balance}")
 
         # Fallback zu tensor approach
         train_windows = epochs_train.get_data()
@@ -1043,31 +1196,35 @@ def train_optimized_eegnet(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        # Trainer mit optimierten Parametern
+        # Trainer mit konservativeren, stabileren Parametern
         trainer = OptimizedEEGNetTrainer(
             n_chans=8,
             n_outputs=3,
-            batch_size=32,
-            lr=0.001,  # Niedrigere LR für stabileres Training
-            weight_decay=0.002,  # Mehr Regularisierung
-            n_epochs=200,  # Mehr Epochen mit Early Stopping
+            batch_size=16,  # Kleiner für stabileres Training
+            lr=0.0005,  # Deutlich niedrigere Learning Rate
+            weight_decay=0.01,  # Höhere Regularisierung
+            n_epochs=300,  # Mehr Epochen mit niedrigerer LR
             device="auto",
-            F1=16,  # Erhöhte Komplexität
-            D=4,
-            F2=32,
-            kernel_length=48,
-            drop_prob=0.4,
+            F1=8,  # Reduzierte Komplexität
+            D=2,  # Einfachere Architektur
+            F2=16,  # Weniger Features
+            kernel_length=48,  # Kleinere Kernel
+            drop_prob=0.5,  # Höhere Regularisierung
             use_label_smoothing=True,
-            label_smoothing_factor=0.1,
+            label_smoothing_factor=0.15,
             use_attention=True,
+            use_gradient_clipping=True,
+            gradient_clip_value=0.5,
         )
 
         # Lade und präprozessiere Epochen
         epochs = trainer.load_and_preprocess_epochs(epochs_path)
 
-        # Training mit Cross-Validation
+        # Training mit konservativerer Aufteilung
         results = trainer.train_optimized(
-            epochs, train_size=0.75, use_cv=use_cross_validation
+            epochs,
+            train_size=0.7,
+            use_cv=use_cross_validation,  # Mehr Daten für Validation
         )
 
         # Speichere Modell
@@ -1106,6 +1263,18 @@ def train_optimized_eegnet(
             f"Improvement over random: {(results['accuracy'] - 0.333) / 0.333 * 100:.1f}%"
         )
 
+        # Führe Diagnose durch
+        diagnosis = diagnose_training_issues(results_summary)
+        if diagnosis["issues_found"]:
+            print(
+                f"\n🔍 Training Diagnosis (Severity: {diagnosis['severity'].upper()}):"
+            )
+            for issue in diagnosis["issues_found"]:
+                print(f"  ❌ {issue}")
+            print("\n💡 Recommendations:")
+            for rec in diagnosis["recommendations"]:
+                print(f"  ✅ {rec}")
+
         return results_summary
 
     except Exception as e:
@@ -1114,6 +1283,60 @@ def train_optimized_eegnet(
 
         traceback.print_exc()
         return {"error": str(e)}
+
+
+def diagnose_training_issues(results: Dict) -> Dict:
+    """Diagnostiziert häufige Training-Probleme und gibt Empfehlungen."""
+
+    diagnosis = {"issues_found": [], "recommendations": [], "severity": "low"}
+
+    # Prüfe CV vs Final Performance Gap
+    if results.get("cv_mean") and results.get("accuracy"):
+        cv_final_gap = results["cv_mean"] - results["accuracy"]
+        if cv_final_gap > 0.2:
+            diagnosis["issues_found"].append(
+                "Severe overfitting: CV much better than final validation"
+            )
+            diagnosis["recommendations"].append("Reduce model complexity (F1, D, F2)")
+            diagnosis["recommendations"].append("Increase dropout and weight decay")
+            diagnosis["recommendations"].append("Use smaller learning rate")
+            diagnosis["severity"] = "high"
+        elif cv_final_gap > 0.1:
+            diagnosis["issues_found"].append("Moderate overfitting detected")
+            diagnosis["recommendations"].append("Increase regularization")
+            diagnosis["severity"] = "medium"
+
+    # Prüfe CV Varianz
+    if results.get("cv_std"):
+        if results["cv_std"] > 0.15:
+            diagnosis["issues_found"].append("High variance between CV folds")
+            diagnosis["recommendations"].append("Use more robust data splitting")
+            diagnosis["recommendations"].append("Increase dataset size if possible")
+            if diagnosis["severity"] == "low":
+                diagnosis["severity"] = "medium"
+
+    # Prüfe finales Accuracy Level
+    if results.get("accuracy"):
+        if results["accuracy"] < 0.4:
+            diagnosis["issues_found"].append("Very low final accuracy")
+            diagnosis["recommendations"].append("Check data preprocessing")
+            diagnosis["recommendations"].append("Verify label encoding")
+            diagnosis["recommendations"].append("Consider different architecture")
+            diagnosis["severity"] = "high"
+        elif results["accuracy"] < 0.5:
+            diagnosis["issues_found"].append("Low final accuracy")
+            diagnosis["recommendations"].append("Tune hyperparameters")
+            if diagnosis["severity"] == "low":
+                diagnosis["severity"] = "medium"
+
+    # Prüfe Mean Confidence
+    if results.get("mean_confidence"):
+        if results["mean_confidence"] > 0.9 and results.get("accuracy", 0) < 0.6:
+            diagnosis["issues_found"].append("Overconfident but inaccurate predictions")
+            diagnosis["recommendations"].append("Increase label smoothing")
+            diagnosis["recommendations"].append("Add more regularization")
+
+    return diagnosis
 
 
 if __name__ == "__main__":
