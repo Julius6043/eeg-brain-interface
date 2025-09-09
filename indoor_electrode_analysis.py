@@ -571,7 +571,7 @@ def create_electrode_comparison_visualization(comparison_results, session_type="
     
     session_title = session_type.upper()
     fig.suptitle(f'8 vs 4 Electrode Performance Comparison\n{session_title} SESSIONS', 
-                 fontsize=16, fontweight='bold', color='darkblue')
+                 fontsize=20, fontweight='bold', color='darkblue')
     
     # 1. Individual participant comparison
     ax1 = fig.add_subplot(gs[0, 0])
@@ -594,13 +594,6 @@ def create_electrode_comparison_visualization(comparison_results, session_type="
     ax1.legend()
     ax1.grid(axis='y', alpha=0.3)
     
-    # Add value labels on bars
-    for bars in [bars1, bars2]:
-        for bar in bars:
-            height = bar.get_height()
-            ax1.text(bar.get_x() + bar.get_width()/2., height + 0.01,
-                    f'{height:.3f}', ha='center', va='bottom', fontsize=8)
-    
     # 2. Performance ratio analysis
     ax2 = fig.add_subplot(gs[0, 1])
     
@@ -621,7 +614,7 @@ def create_electrode_comparison_visualization(comparison_results, session_type="
     # Add value labels
     for i, (bar, ratio) in enumerate(zip(bars, ratios)):
         ax2.text(bar.get_x() + bar.get_width()/2., ratio + 1,
-                f'{ratio:.1f}%', ha='center', va='bottom', fontsize=8)
+                f'{ratio:.1f}%', ha='center', va='bottom', fontsize=12)
     
     # 3. Statistical summary
     ax3 = fig.add_subplot(gs[1, 0])
@@ -667,7 +660,7 @@ def create_electrode_comparison_visualization(comparison_results, session_type="
     for i, (bar, diff) in enumerate(zip(bars, differences)):
         y_pos = diff + 0.002 if diff >= 0 else diff - 0.005
         ax4.text(bar.get_x() + bar.get_width()/2., y_pos,
-                f'{diff:.3f}', ha='center', va='bottom' if diff >= 0 else 'top', fontsize=8)
+                f'{diff:.3f}', ha='center', va='bottom' if diff >= 0 else 'top', fontsize=12)
     
     # Save the comparison plot
     output_dir = Path("results")
@@ -699,9 +692,9 @@ def create_session_visualization(all_results_df, session_type="indoor"):
     
     if loo_data.empty:
         ax.text(0.5, 0.5, f'No leave-one-out data\navailable for {session_type}', 
-                ha='center', va='center', transform=ax.transAxes, fontsize=14, color='gray')
+                ha='center', va='center', transform=ax.transAxes, fontsize=18, color='gray')
         ax.set_title(f'{session_type.title()} Session - Electrode Performance Analysis', 
-                     fontsize=14, fontweight='bold')
+                     fontsize=18, fontweight='bold')
         return fig
     
     # Group by excluded electrode and calculate mean accuracy drop (higher drop = more important)
@@ -712,10 +705,10 @@ def create_session_visualization(all_results_df, session_type="indoor"):
                   color=plt.cm.viridis(np.linspace(0, 1, len(electrode_drops))))
     
     # Customize the plot
-    ax.set_xlabel('Electrode', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Mean Accuracy Drop\n(Higher = More Important)', fontsize=12, fontweight='bold')
+    ax.set_xlabel('Electrode', fontsize=16, fontweight='bold')
+    ax.set_ylabel('Mean Accuracy Drop\n(Higher = More Important)', fontsize=16, fontweight='bold')
     ax.set_title(f'{session_type.title()} Session - Electrode Importance Analysis\n(Accuracy Drop When Removed)', 
-                 fontsize=14, fontweight='bold')
+                 fontsize=18, fontweight='bold')
     ax.set_xticks(range(len(electrode_drops)))
     ax.set_xticklabels(electrode_drops.index, rotation=45)
     ax.grid(True, alpha=0.3)
@@ -766,10 +759,10 @@ def create_rank_sum_visualization(rank_sum_data, session_type="indoor"):
     bars = ax.bar(range(len(electrodes)), rank_sums, color=colors, alpha=0.8)
     
     # Customize the plot
-    ax.set_xlabel('Electrode', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Rank Sum\n(Lower = Better Performance)', fontsize=12, fontweight='bold')
+    ax.set_xlabel('Electrode', fontsize=16, fontweight='bold')
+    ax.set_ylabel('Rank Sum\n(Lower = Better Performance)', fontsize=16, fontweight='bold')
     ax.set_title(f'{session_type.title()} Session - Electrode Ranking Summary\n(Based on Cumulative Rankings Across All Participants)', 
-                 fontsize=14, fontweight='bold')
+                 fontsize=18, fontweight='bold')
     ax.set_xticks(range(len(electrodes)))
     ax.set_xticklabels(electrodes, rotation=45)
     ax.grid(True, alpha=0.3, axis='y')
@@ -777,14 +770,14 @@ def create_rank_sum_visualization(rank_sum_data, session_type="indoor"):
     # Add value labels on bars
     for i, (electrode, rank_sum) in enumerate(zip(electrodes, rank_sums)):
         ax.text(i, rank_sum + max(rank_sums) * 0.01, f'{rank_sum}', 
-                ha='center', va='bottom', fontweight='bold', fontsize=10)
+                ha='center', va='bottom', fontweight='bold', fontsize=14)
     
     # Add rank position labels
     for i, (electrode, rank_sum) in enumerate(zip(electrodes, rank_sums)):
         position = i + 1
         ax.text(i, rank_sum * 0.5, f'#{position}', 
                 ha='center', va='center', fontweight='bold', 
-                fontsize=12, color='white' if rank_sum > max(rank_sums) * 0.7 else 'black')
+                fontsize=16, color='white' if rank_sum > max(rank_sums) * 0.7 else 'black')
     
     plt.tight_layout()
     
@@ -818,7 +811,7 @@ def create_enhanced_comparison_visualization(enhanced_results):
     gs = fig.add_gridspec(2, 3, hspace=0.3, wspace=0.3)
     
     fig.suptitle('Enhanced 8 vs 4 Electrode Analysis\nIndoor Training → Statistical Testing → Outdoor Generalization', 
-                 fontsize=16, fontweight='bold', color='darkblue')
+                 fontsize=20, fontweight='bold', color='darkblue')
     
     # 1. Indoor Cross-Validation Comparison
     ax1 = fig.add_subplot(gs[0, 0])
@@ -839,7 +832,7 @@ def create_enhanced_comparison_visualization(enhanced_results):
     ax1.set_title('Indoor Cross-Validation Training', fontweight='bold')
     ax1.set_xticks(x_pos)
     ax1.set_xticklabels(participants, rotation=45)
-    ax1.legend()
+    ax1.legend(loc='lower left')
     ax1.grid(axis='y', alpha=0.3)
     
     # 2. Statistical Significance (P-values)
@@ -891,7 +884,7 @@ def create_enhanced_comparison_visualization(enhanced_results):
         ax3.grid(axis='y', alpha=0.3)
     else:
         ax3.text(0.5, 0.5, 'No Outdoor Data\nAvailable', ha='center', va='center',
-                transform=ax3.transAxes, fontsize=14, color='gray')
+                transform=ax3.transAxes, fontsize=18, color='gray')
         ax3.set_title('Outdoor Generalization Testing', fontweight='bold')
     
     # 4. Generalization Analysis (Indoor vs Outdoor)
@@ -912,7 +905,7 @@ def create_enhanced_comparison_visualization(enhanced_results):
         ax4.grid(axis='y', alpha=0.3)
     else:
         ax4.text(0.5, 0.5, 'No Outdoor Data\nfor Generalization\nAnalysis', 
-                ha='center', va='center', transform=ax4.transAxes, fontsize=12, color='gray')
+                ha='center', va='center', transform=ax4.transAxes, fontsize=16, color='gray')
         ax4.set_title('Indoor → Outdoor Generalization', fontweight='bold')
     
     # 5. Performance Retention Analysis
@@ -940,7 +933,7 @@ def create_enhanced_comparison_visualization(enhanced_results):
         ax5.grid(axis='y', alpha=0.3)
     else:
         ax5.text(0.5, 0.5, 'No Outdoor Data\nfor Retention\nAnalysis', 
-                ha='center', va='center', transform=ax5.transAxes, fontsize=12, color='gray')
+                ha='center', va='center', transform=ax5.transAxes, fontsize=16, color='gray')
         ax5.set_title('Outdoor Performance Retention', fontweight='bold')
     
     # 6. Summary Statistics Table
@@ -978,7 +971,7 @@ def create_enhanced_comparison_visualization(enhanced_results):
     else:
         summary_text += "Outdoor Testing: No data available"
     
-    ax6.text(0.05, 0.95, summary_text, transform=ax6.transAxes, fontsize=10,
+    ax6.text(0.05, 0.95, summary_text, transform=ax6.transAxes, fontsize=14,
              verticalalignment='top', fontfamily='monospace',
              bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.3))
     
