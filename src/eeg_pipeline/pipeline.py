@@ -20,11 +20,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from .plot import PlotConfig
-from .data_loading import DataLoadingConfig, SessionData, load_all_sessions
-from .preprocessing import PreprocessingConfig, preprocess_raw
-from .marker_annotation import annotate_raw_with_markers
-from .epoching import EpochingConfig, create_epochs_from_raw, validate_epochs
+from eeg_pipeline.plot import PlotConfig
+from eeg_pipeline.data_loading import DataLoadingConfig, SessionData, load_all_sessions
+from eeg_pipeline.preprocessing import PreprocessingConfig, preprocess_raw
+from eeg_pipeline.marker_annotation import annotate_raw_with_markers
+from eeg_pipeline.epoching import (
+    EpochingConfig,
+    create_epochs_from_raw,
+    validate_epochs,
+)
 import mne
 
 
@@ -111,7 +115,7 @@ class EEGPipeline:
         if self.config.epoching:
             print("\nStep 4: Epoching")
             for session in self.sessions:
-                if session.participant_name == 'jannik':
+                if session.participant_name == "jannik":
                     continue
                 if session.indoor_session and session.indoor_session.annotations:
                     session.indoor_epochs = create_epochs_from_raw(
@@ -159,7 +163,9 @@ class EEGPipeline:
             if session.indoor_session:
                 indoor_path = session_dir / "indoor_processed_raw.fif"
                 session.indoor_session.save(str(indoor_path), overwrite=True)
-                assert indoor_path.exists(), f"Indoor Raw-Datei nicht erstellt: {indoor_path}"
+                assert (
+                    indoor_path.exists()
+                ), f"Indoor Raw-Datei nicht erstellt: {indoor_path}"
                 print("    ✓ Indoor-Session gespeichert und validiert")
             else:
                 print("    ⚠ Keine Indoor-Session verfügbar")
@@ -167,7 +173,9 @@ class EEGPipeline:
             if session.outdoor_session:
                 outdoor_path = session_dir / "outdoor_processed_raw.fif"
                 session.outdoor_session.save(str(outdoor_path), overwrite=True)
-                assert outdoor_path.exists(), f"Outdoor Raw-Datei nicht erstellt: {outdoor_path}"
+                assert (
+                    outdoor_path.exists()
+                ), f"Outdoor Raw-Datei nicht erstellt: {outdoor_path}"
                 print("    ✓ Outdoor-Session gespeichert und validiert")
             else:
                 print("    ⚠ Keine Outdoor-Session verfügbar")
@@ -178,14 +186,21 @@ class EEGPipeline:
                 indoor_epochs_path = session_dir / "indoor_processed-epo.fif"
                 session.indoor_epochs.save(str(indoor_epochs_path), overwrite=True)
 
-                assert indoor_epochs_path.exists(), f"Indoor Epochen-Datei nicht erstellt: {indoor_epochs_path}"
+                assert (
+                    indoor_epochs_path.exists()
+                ), f"Indoor Epochen-Datei nicht erstellt: {indoor_epochs_path}"
 
                 loaded_epochs = mne.read_epochs(str(indoor_epochs_path), verbose=False)
                 assert len(loaded_epochs) == len(
-                    session.indoor_epochs), "Indoor Epoch-Anzahl nach Speichern unterschiedlich"
-                assert loaded_epochs.event_id == session.indoor_epochs.event_id, "Indoor Event-IDs nach Speichern unterschiedlich"
+                    session.indoor_epochs
+                ), "Indoor Epoch-Anzahl nach Speichern unterschiedlich"
+                assert (
+                    loaded_epochs.event_id == session.indoor_epochs.event_id
+                ), "Indoor Event-IDs nach Speichern unterschiedlich"
 
-                print(f"    ✓ Indoor-Epochen gespeichert und validiert ({len(loaded_epochs)} Epochen)")
+                print(
+                    f"    ✓ Indoor-Epochen gespeichert und validiert ({len(loaded_epochs)} Epochen)"
+                )
 
             if session.outdoor_epochs:
                 validate_epochs(session.outdoor_epochs)
@@ -193,16 +208,25 @@ class EEGPipeline:
                 outdoor_epochs_path = session_dir / "outdoor_processed-epo.fif"
                 session.outdoor_epochs.save(str(outdoor_epochs_path), overwrite=True)
 
-                assert outdoor_epochs_path.exists(), f"Outdoor Epochen-Datei nicht erstellt: {outdoor_epochs_path}"
+                assert (
+                    outdoor_epochs_path.exists()
+                ), f"Outdoor Epochen-Datei nicht erstellt: {outdoor_epochs_path}"
 
                 loaded_epochs = mne.read_epochs(str(outdoor_epochs_path), verbose=False)
                 assert len(loaded_epochs) == len(
-                    session.outdoor_epochs), "Outdoor Epoch-Anzahl nach Speichern unterschiedlich"
-                assert loaded_epochs.event_id == session.outdoor_epochs.event_id, "Outdoor Event-IDs nach Speichern unterschiedlich"
+                    session.outdoor_epochs
+                ), "Outdoor Epoch-Anzahl nach Speichern unterschiedlich"
+                assert (
+                    loaded_epochs.event_id == session.outdoor_epochs.event_id
+                ), "Outdoor Event-IDs nach Speichern unterschiedlich"
 
-                print(f"    ✓ Outdoor-Epochen gespeichert und validiert ({len(loaded_epochs)} Epochen)")
+                print(
+                    f"    ✓ Outdoor-Epochen gespeichert und validiert ({len(loaded_epochs)} Epochen)"
+                )
 
-        print(f"✓ Alle Daten erfolgreich gespeichert und validiert in {self.config.output_dir}")
+        print(
+            f"✓ Alle Daten erfolgreich gespeichert und validiert in {self.config.output_dir}"
+        )
 
 
 def create_default_config() -> PipelineConfig:
@@ -216,8 +240,8 @@ def create_default_config() -> PipelineConfig:
             channels_keep=None,  # Use all available channels (EEG1-EEG8)
             # channels_keep=["EEG1", "EEG2", "EEG3", "EEG4", "EEG5", "EEG6", "EEG7"],  # Excludes EEG8
             # channels_keep=["EEG1", "EEG3", "EEG4", "EEG5", "EEG6", "EEG7", "EEG8"],  # Excludes EEG2
-            max_channels=8, 
-            montage="standard_1020"
+            max_channels=8,
+            montage="standard_1020",
         ),
         preprocessing=PreprocessingConfig(l_freq=4.0, h_freq=40.0, notch_freq=50.0),
         epoching=EpochingConfig(),  # Aktiviere Epoching mit Standard-Parametern
