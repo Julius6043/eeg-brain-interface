@@ -24,7 +24,8 @@ USAGE: Change ANALYSIS_SESSION = "indoor" or "outdoor" at the top of the script
 import numpy as np, pandas as pd, mne, joblib
 from pathlib import Path
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.model_selection import StratifiedKFold, cross_val_score, cross_val_predict
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, precision_recall_fscore_support
 from sklearn.preprocessing import StandardScaler
 from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.base import clone
@@ -261,6 +262,39 @@ def train_and_evaluate_rf_with_models(X, y, cv_folds=5):
     
     fold_scores = np.array(fold_scores)
     return fold_scores.mean(), fold_scores.std(), fold_scores, trained_models, scaler, selector
+
+def train_and_evaluate_rf_with_confusion_matrix(X, y, cv_folds=5):
+    """Train Random Forest with cross-validation and return confusion matrix data"""
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    # Apply feature selection if more than 20 features
+    if X_scaled.shape[1] > 20:
+        selector = SelectKBest(score_func=f_classif, k=20)
+        X_selected = selector.fit_transform(X_scaled, y)
+    else:
+        selector = None
+        X_selected = X_scaled
+
+    min_class_count = np.bincount(y).min()
+    n_splits = min(cv_folds, min_class_count) if min_class_count > 1 else 2
+
+    rf = RandomForestClassifier(n_estimators=1000, max_depth=None,
+                               min_samples_split=4, min_samples_leaf=6,
+                               class_weight="balanced", random_state=RANDOM_SEED, n_jobs=-1)
+
+    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=RANDOM_SEED)
+    
+    # Get cross-validation predictions for confusion matrix
+    y_pred = cross_val_predict(rf, X_selected, y, cv=cv, n_jobs=-1)
+    
+    # Calculate confusion matrix
+    cm = confusion_matrix(y, y_pred, labels=sorted(np.unique(y)))
+    
+    # Calculate scores
+    scores = cross_val_score(rf, X_selected, y, cv=cv, scoring="accuracy", n_jobs=-1)
+    
+    return scores.mean(), scores.std(), scores, cm, y, y_pred
 
 def test_models_on_outdoor_data(trained_models, outdoor_epochs, exclude_channels=None):
     """Test trained indoor models on outdoor data (no data leakage)"""
@@ -550,6 +584,66 @@ def compare_8vs4_electrodes(participant, session_type, best_4_electrodes):
     print(f"  4-electrode efficiency: {acc_4_mean/acc_8_mean*100:.1f}% of 8-electrode performance")
     
     return comparison_result
+
+def compare_8vs4_electrodes_with_confusion_matrix(participant, session_type, best_4_electrodes):
+    """Enhanced 8 vs 4 electrode comparison with confusion matrices"""
+    print(f"\n🔬 8 vs 4 Electrode Analysis with Confusion Matrix: {participant} {session_type}")
+    
+    # Load data
+    epochs = load_participant_session(participant, session_type)
+    if epochs is None:
+        return None
+    
+    y = epochs.metadata["difficulty"].astype(int).to_numpy()
+    
+    # Get difficulty labels
+    difficulty_mapping = {0: '0-back', 1: '1-back', 2: '2-back', 3: '3-back'} if INCLUDE_0_BACK else {1: '1-back', 2: '2-back', 3: '3-back'}
+    difficulty_labels = [difficulty_mapping[label] for label in sorted(np.unique(y))]
+    
+    # Test with all 8 electrodes
+    print("→ Testing with all 8 electrodes (with confusion matrix)...")
+    X_8_electrodes, _, _ = extract_features(epochs)
+    acc_8_mean, acc_8_std, _, cm_8, y_true, y_pred_8 = train_and_evaluate_rf_with_confusion_matrix(X_8_electrodes, y)
+    
+    # Test with best 4 electrodes
+    print(f"→ Testing with best 4 electrodes: {best_4_electrodes}")
+    worst_4_electrodes = [el for el in ALL_ELECTRODES if el not in best_4_electrodes]
+    X_4_electrodes, _, _ = extract_features(epochs, exclude_channels=worst_4_electrodes)
+    acc_4_mean, acc_4_std, _, cm_4, _, y_pred_4 = train_and_evaluate_rf_with_confusion_matrix(X_4_electrodes, y)
+    
+    print(f"  8 electrodes: {acc_8_mean:.3f} ± {acc_8_std:.3f}")
+    print(f"  4 electrodes: {acc_4_mean:.3f} ± {acc_4_std:.3f}")
+    
+    print(f"\n  Confusion Matrix (8 electrodes):")
+    print(f"  {cm_8}")
+    print(f"\n  Confusion Matrix (4 electrodes):")
+    print(f"  {cm_4}")
+    
+    # Calculate per-class metrics
+    print(f"\n  Classification Report (8 electrodes):")
+    print(classification_report(y_true, y_pred_8, target_names=difficulty_labels, digits=3))
+    
+    print(f"\n  Classification Report (4 electrodes):")
+    print(classification_report(y_true, y_pred_4, target_names=difficulty_labels, digits=3))
+    
+    confusion_matrix_result = {
+        'participant': participant,
+        'session_type': session_type,
+        'cm_8_electrodes': cm_8,
+        'cm_4_electrodes': cm_4,
+        'acc_8': acc_8_mean,
+        'acc_4': acc_4_mean,
+        'acc_8_std': acc_8_std,
+        'acc_4_std': acc_4_std,
+        'difficulty_labels': difficulty_labels,
+        'y_true': y_true,
+        'y_pred_8': y_pred_8,
+        'y_pred_4': y_pred_4,
+        'best_4_electrodes': ', '.join(best_4_electrodes),
+        'accuracy_difference': acc_8_mean - acc_4_mean
+    }
+    
+    return confusion_matrix_result
 
 def create_electrode_comparison_visualization(comparison_results, session_type="indoor"):
     """Create visualization comparing 8 vs 4 electrode performance"""
@@ -985,6 +1079,178 @@ def create_enhanced_comparison_visualization(enhanced_results):
     plt.show()
     return fig
 
+def create_confusion_matrix_visualization(cm_results, session_type="indoor"):
+    """Create confusion matrix visualization for all participants"""
+    
+    if not cm_results:
+        print(f"❌ No confusion matrix data to visualize for {session_type}!")
+        return None
+    
+    # Set up plotting
+    plt.style.use('default')
+    sns.set_palette("Set2")
+    
+    # Determine grid size based on number of participants
+    n_participants = len(cm_results)
+    cols = min(3, n_participants)
+    rows = (n_participants + cols - 1) // cols
+    
+    fig, axes = plt.subplots(rows, cols, figsize=(5*cols, 4*rows))
+    if n_participants == 1:
+        axes = [axes]
+    elif rows == 1:
+        axes = axes if hasattr(axes, '__len__') else [axes]
+    else:
+        axes = axes.flatten()
+    
+    fig.suptitle(f'Confusion Matrices - {session_type.title()} Session\n8 Electrodes vs 4 Best Electrodes', 
+                 fontsize=16, fontweight='bold')
+    
+    for i, result in enumerate(cm_results):
+        ax = axes[i]
+        
+        participant = result['participant'].replace('sub-', '')
+        cm_8 = result['cm_8_electrodes']
+        cm_4 = result['cm_4_electrodes']
+        
+        # Create side-by-side confusion matrices
+        # Combine both matrices for visualization
+        combined_cm = np.hstack([cm_8, np.zeros((cm_8.shape[0], 1)), cm_4])
+        
+        # Create labels
+        difficulty_labels = result['difficulty_labels']
+        combined_labels = [f'{label}\n(8-elec)' for label in difficulty_labels] + [''] + [f'{label}\n(4-elec)' for label in difficulty_labels]
+        
+        # Plot heatmap
+        sns.heatmap(combined_cm, annot=True, fmt='d', cmap='Blues', ax=ax,
+                   xticklabels=combined_labels, yticklabels=difficulty_labels,
+                   cbar=True)
+        
+        ax.set_title(f'{participant}\nAcc: 8-elec={result["acc_8"]:.3f}, 4-elec={result["acc_4"]:.3f}',
+                    fontweight='bold')
+        ax.set_xlabel('Predicted')
+        ax.set_ylabel('True')
+        
+        # Add vertical line to separate matrices
+        line_pos = len(difficulty_labels) + 0.5
+        ax.axvline(x=line_pos, color='red', linewidth=3)
+    
+    # Hide unused subplots
+    for i in range(n_participants, len(axes)):
+        axes[i].set_visible(False)
+    
+    plt.tight_layout()
+    
+    # Save plot
+    output_dir = Path("results")
+    output_dir.mkdir(exist_ok=True)
+    plot_path = output_dir / f"confusion_matrices_{session_type}.png"
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
+    print(f"📊 Confusion matrices saved to: {plot_path}")
+    
+    plt.show()
+    return fig
+
+def create_detailed_confusion_matrix_analysis(cm_results, session_type="indoor"):
+    """Create detailed confusion matrix analysis with metrics"""
+    
+    if not cm_results:
+        print(f"❌ No confusion matrix results for {session_type}!")
+        return None
+    
+    # Set up plotting
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle(f'Detailed Confusion Matrix Analysis - {session_type.title()} Session', 
+                 fontsize=18, fontweight='bold')
+    
+    # 1. Average confusion matrices
+    ax1 = axes[0, 0]
+    
+    # Calculate average confusion matrices
+    cm_8_list = [result['cm_8_electrodes'] for result in cm_results]
+    cm_4_list = [result['cm_4_electrodes'] for result in cm_results]
+    
+    avg_cm_8 = np.mean(cm_8_list, axis=0)
+    avg_cm_4 = np.mean(cm_4_list, axis=0)
+    
+    difficulty_labels = cm_results[0]['difficulty_labels']
+    
+    # Plot average 8-electrode confusion matrix
+    sns.heatmap(avg_cm_8, annot=True, fmt='.1f', cmap='Blues', ax=ax1,
+               xticklabels=difficulty_labels, yticklabels=difficulty_labels)
+    ax1.set_title('Average Confusion Matrix - 8 Electrodes', fontweight='bold')
+    ax1.set_xlabel('Predicted')
+    ax1.set_ylabel('True')
+    
+    # 2. Average 4-electrode confusion matrix
+    ax2 = axes[0, 1]
+    sns.heatmap(avg_cm_4, annot=True, fmt='.1f', cmap='Reds', ax=ax2,
+               xticklabels=difficulty_labels, yticklabels=difficulty_labels)
+    ax2.set_title('Average Confusion Matrix - 4 Best Electrodes', fontweight='bold')
+    ax2.set_xlabel('Predicted')
+    ax2.set_ylabel('True')
+    
+    # 3. Per-class accuracy comparison
+    ax3 = axes[1, 0]
+    
+    # Calculate per-class accuracies
+    class_accuracies_8 = []
+    class_accuracies_4 = []
+    
+    for i, label in enumerate(difficulty_labels):
+        acc_8_class = [cm[i, i] / cm[i, :].sum() if cm[i, :].sum() > 0 else 0 
+                       for cm in cm_8_list]
+        acc_4_class = [cm[i, i] / cm[i, :].sum() if cm[i, :].sum() > 0 else 0 
+                       for cm in cm_4_list]
+        
+        class_accuracies_8.append(np.mean(acc_8_class))
+        class_accuracies_4.append(np.mean(acc_4_class))
+    
+    x_pos = np.arange(len(difficulty_labels))
+    width = 0.35
+    
+    bars1 = ax3.bar(x_pos - width/2, class_accuracies_8, width, 
+                    label='8 Electrodes', color='steelblue', alpha=0.8)
+    bars2 = ax3.bar(x_pos + width/2, class_accuracies_4, width,
+                    label='4 Best Electrodes', color='lightcoral', alpha=0.8)
+    
+    ax3.set_xlabel('Difficulty Level', fontweight='bold')
+    ax3.set_ylabel('Average Per-Class Accuracy', fontweight='bold')
+    ax3.set_title('Per-Class Accuracy Comparison', fontweight='bold')
+    ax3.set_xticks(x_pos)
+    ax3.set_xticklabels(difficulty_labels)
+    ax3.legend()
+    ax3.grid(axis='y', alpha=0.3)
+    
+    # Add value labels
+    for bars in [bars1, bars2]:
+        for bar in bars:
+            height = bar.get_height()
+            ax3.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                    f'{height:.3f}', ha='center', va='bottom')
+    
+    # 4. Confusion matrix difference (8-elec minus 4-elec)
+    ax4 = axes[1, 1]
+    
+    cm_diff = avg_cm_8 - avg_cm_4
+    sns.heatmap(cm_diff, annot=True, fmt='.1f', cmap='RdBu_r', center=0, ax=ax4,
+               xticklabels=difficulty_labels, yticklabels=difficulty_labels)
+    ax4.set_title('Confusion Matrix Difference\n(8-electrodes - 4-electrodes)', fontweight='bold')
+    ax4.set_xlabel('Predicted')
+    ax4.set_ylabel('True')
+    
+    plt.tight_layout()
+    
+    # Save plot
+    output_dir = Path("results")
+    output_dir.mkdir(exist_ok=True)
+    plot_path = output_dir / f"detailed_confusion_matrix_analysis_{session_type}.png"
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
+    print(f"📊 Detailed confusion matrix analysis saved to: {plot_path}")
+    
+    plt.show()
+    return fig
+
 def main():
     """Run electrode importance analysis for specified session types"""
     # Clear global variables to prevent data accumulation from previous runs
@@ -1173,6 +1439,67 @@ def main():
         enhanced_path = output_dir / f"enhanced_electrode_comparison_{session_name}.csv"
         enhanced_df.to_csv(enhanced_path, index=False)
         print(f"💾 Enhanced comparison results saved to: {enhanced_path}")
+    
+    # CONFUSION MATRIX ANALYSIS
+    print(f"\n🔬 CONFUSION MATRIX ANALYSIS")
+    print("=" * 60)
+    print("Generating confusion matrices for 8 vs 4 electrode comparison...")
+    
+    confusion_matrix_results = []
+    cm_completed = 0
+    
+    for participant in participants:
+        for session_type in SESSION_TYPES:
+            cm_result = compare_8vs4_electrodes_with_confusion_matrix(participant, session_type, best_4_electrodes)
+            if cm_result:
+                confusion_matrix_results.append(cm_result)
+                cm_completed += 1
+    
+    print(f"\n✅ COMPLETED: {cm_completed}/{total_planned} confusion matrix analyses")
+    
+    # Generate confusion matrix visualizations
+    if confusion_matrix_results:
+        print(f"\n🎨 Generating confusion matrix visualizations...")
+        create_confusion_matrix_visualization(confusion_matrix_results, session_name)
+        create_detailed_confusion_matrix_analysis(confusion_matrix_results, session_name)
+        
+        # Save confusion matrix results
+        # Create detailed confusion matrix summary
+        cm_summary = []
+        for result in confusion_matrix_results:
+            cm_summary.append({
+                'participant': result['participant'],
+                'session_type': result['session_type'],
+                'accuracy_8_electrodes': result['acc_8'],
+                'accuracy_4_electrodes': result['acc_4'],
+                'accuracy_difference': result['accuracy_difference'],
+                'best_4_electrodes': result['best_4_electrodes']
+            })
+        
+        cm_summary_df = pd.DataFrame(cm_summary)
+        cm_summary_path = output_dir / f"confusion_matrix_summary_{session_name}.csv"
+        cm_summary_df.to_csv(cm_summary_path, index=False)
+        print(f"💾 Confusion matrix summary saved to: {cm_summary_path}")
+        
+        # Save individual confusion matrices as separate files
+        for i, result in enumerate(confusion_matrix_results):
+            participant = result['participant']
+            
+            # Save 8-electrode confusion matrix
+            cm_8_df = pd.DataFrame(result['cm_8_electrodes'], 
+                                  index=result['difficulty_labels'], 
+                                  columns=result['difficulty_labels'])
+            cm_8_path = output_dir / f"cm_8elec_{participant}_{session_name}.csv"
+            cm_8_df.to_csv(cm_8_path)
+            
+            # Save 4-electrode confusion matrix
+            cm_4_df = pd.DataFrame(result['cm_4_electrodes'], 
+                                  index=result['difficulty_labels'], 
+                                  columns=result['difficulty_labels'])
+            cm_4_path = output_dir / f"cm_4elec_{participant}_{session_name}.csv"
+            cm_4_df.to_csv(cm_4_path)
+        
+        print(f"💾 Individual confusion matrices saved to results/ directory")
         
         # Print comprehensive summary
         print(f"\n📊 ENHANCED COMPARISON SUMMARY:")
@@ -1292,11 +1619,11 @@ def main():
             print(f"🥇 BEST electrode by rank sum: {best_electrode[0]} (sum={best_electrode[1]})")
             print(f"🥉 WORST electrode by rank sum: {worst_electrode[0]} (sum={worst_electrode[1]})")
     
-    print(f"\n✅ {session_title}-ONLY ANALYSIS COMPLETE!")
-    print(f"📊 Results: {completed_analyses} {session_name} analyses → ranking → rank sums → visualization")
+    print(f"\n✅ {session_title}-ONLY ANALYSIS WITH CONFUSION MATRICES COMPLETE!")
+    print(f"📊 Results: {completed_analyses} analyses → {cm_completed} confusion matrices → visualizations")
     print(f"📊 Enhanced Analysis: {len(enhanced_comparison_results)} enhanced comparisons → statistical testing → outdoor validation")
     
-    return all_results_df, avg_rankings, enhanced_comparison_results
+    return all_results_df, avg_rankings, enhanced_comparison_results, confusion_matrix_results
 
 if __name__ == "__main__":
-    results_df, rankings, enhanced_comparison_results = main()
+    results_df, rankings, enhanced_results, cm_results = main()
