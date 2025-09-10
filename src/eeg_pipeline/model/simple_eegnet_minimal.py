@@ -4,64 +4,272 @@ from pathlib import Path
 
 from braindecode import EEGClassifier
 from braindecode.datasets import create_from_mne_epochs
-from braindecode.models import EEGNet, ShallowFBCSPNet, Deep4Net, EEGNetv4, ATCNet, AttentionBaseNet
+from braindecode.models import EEGNet, ShallowFBCSPNet, ATCNet, AttentionBaseNet
 
-from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 import numpy as np
 from skorch.callbacks import LRScheduler
 from skorch.helper import predefined_split
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from sklearn.metrics import confusion_matrix, classification_report, f1_score
+
+# Import epoching functionality for dynamic epoching
+from eeg_pipeline.epoching import EpochingConfig
 
 mne.set_log_level("ERROR")
 
 
-def load_and_prepare_data():
+class FocalLoss(nn.Module):
+    """Focal Loss für Class Imbalance - besonders effektiv gegen Majority Class Bias"""
+    def __init__(self, alpha=1, gamma=2, weight=None):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.register_buffer('weight', weight)  # Register als buffer für automatisches device handling
+        
+    def forward(self, inputs, targets):
+        ce_loss = F.cross_entropy(inputs, targets, weight=self.weight, reduction='none')
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1-pt)**self.gamma * ce_loss
+        return focal_loss.mean()
+
+
+def load_and_prepare_raw_data():
+    """Lädt Raw-Daten statt vor-epochierter Daten um Data Leakage zu vermeiden."""
     base_dir = Path(__file__).parent.parent.parent.parent
-    epochs_path = (
-        base_dir / "results" / "processed" / "Aliaa" / "indoor_processed-epo.fif"
+    raw_path = (
+        base_dir / "results" / "processed" / "Aliaa" / "indoor_processed_raw.fif"
     )
 
-    if not epochs_path.exists():
-        raise FileNotFoundError(f"Epochs file not found: {epochs_path}")
+    if not raw_path.exists():
+        raise FileNotFoundError(f"Raw file not found: {raw_path}")
 
-    epochs = mne.read_epochs(str(epochs_path), preload=True, verbose=False)
-
-    baseline_condition_name = "baseline"
-
-    if baseline_condition_name not in epochs.event_id:
+    # Lade preprocessed Raw-Daten mit Annotationen
+    raw = mne.io.read_raw_fif(str(raw_path), preload=True, verbose=False)
+    
+    # Prüfe verfügbare Annotationen
+    available_annotations = set(raw.annotations.description)
+    print(f"Available annotations: {available_annotations}")
+    
+    expected_conditions = {"baseline", "1-back", "2-back", "3-back"}
+    missing_conditions = expected_conditions - available_annotations
+    
+    if missing_conditions:
         raise ValueError(
-            f"Baseline-Bedingung '{baseline_condition_name}' nicht in den Epochs gefunden. "
-            f"Verfügbare Bedingungen: {list(epochs.event_id.keys())}"
+            f"Fehlende Annotationen: {missing_conditions}. "
+            f"Verfügbare: {available_annotations}"
         )
 
-    # Trennen der Epochen
-    baseline_epochs = epochs[baseline_condition_name]
-    task_epochs = epochs[["1-back", "2-back", "3-back"]]
+    print(f"Raw data loaded: {raw.info['nchan']} channels, {raw.times[-1]:.1f}s duration")
+    print(f"Annotations: {len(raw.annotations)} total")
+    
+    # Zähle Annotationen nach Typ
+    for condition in expected_conditions:
+        count = sum(1 for desc in raw.annotations.description if desc == condition)
+        total_duration = sum(annot['duration'] for annot in raw.annotations if annot['description'] == condition)
+        print(f"  {condition}: {count} blocks, {total_duration:.1f}s total")
 
-    print(f"Loaded {len(task_epochs)} task epochs.")
-    print(f"Found {len(baseline_epochs)} baseline epochs for normalization.")
+    return raw
 
-    return task_epochs, baseline_epochs
+
+def create_epochs_for_split(raw, annotation_indices, use_overlap=True, segment_length=4.0, overlap=2.0):
+    """Erstellt Epochen für spezifische Annotationen (für einen CV-Split).
+    
+    Parameters
+    ----------
+    raw : mne.io.Raw
+        Raw-Daten mit Annotationen
+    annotation_indices : list
+        Liste der Annotation-Indices für diesen Split
+    use_overlap : bool
+        Ob Overlap verwendet werden soll (True für Training, False für Test)
+    segment_length : float
+        Länge der Segmente in Sekunden
+    overlap : float
+        Overlap in Sekunden (nur wenn use_overlap=True)
+        
+    Returns
+    -------
+    mne.Epochs
+        Epochierte Daten mit Metadaten
+    """
+    # Erstelle temporäre Annotations nur für diesen Split
+    temp_annotations = mne.Annotations(
+        onset=[raw.annotations.onset[i] for i in annotation_indices],
+        duration=[raw.annotations.duration[i] for i in annotation_indices], 
+        description=[raw.annotations.description[i] for i in annotation_indices],
+        orig_time=raw.annotations.orig_time
+    )
+    
+    # Temporäres Raw-Objekt mit gefilterten Annotationen
+    temp_raw = raw.copy()
+    temp_raw.set_annotations(temp_annotations)
+    
+    # Epoching-Konfiguration
+    actual_overlap = overlap if use_overlap else 0.0
+    
+    config = EpochingConfig(
+        tmin=0.0,
+        tmax=segment_length,
+        baseline=None
+    )
+    
+    print(f"  Creating epochs: {len(annotation_indices)} annotations, "
+          f"segment_length={segment_length}s, overlap={actual_overlap}s")
+    
+    # Event-Generierung für alle Annotationen
+    # Erstelle event_id dynamisch basierend auf vorhandenen Annotationen
+    unique_descriptions = set(temp_raw.annotations.description)
+    print(f"    Unique annotations in this split: {unique_descriptions}")
+    
+    # Basis event_id mapping
+    all_event_ids = {
+        'baseline': 0,
+        '1-back': 1,
+        '2-back': 2,
+        '3-back': 3
+    }
+    
+    # Filtere nur die tatsächlich vorhandenen Events
+    event_id = {desc: event_id for desc, event_id in all_event_ids.items() 
+                if desc in unique_descriptions}
+    
+    all_events = []
+    
+    for annot in temp_raw.annotations:
+        description = annot['description']
+        start_time = annot['onset']
+        duration = annot['duration']
+        
+        if description not in event_id:
+            print(f"    Warning: Unknown annotation '{description}', skipping")
+            continue
+            
+        # Erstelle Events für diese Annotation mit oder ohne Overlap
+        block_events = mne.make_fixed_length_events(
+            temp_raw,
+            id=event_id[description],
+            start=start_time,
+            stop=start_time + duration,
+            duration=segment_length,
+            overlap=actual_overlap
+        )
+        
+        if len(block_events) > 0:
+            all_events.append(block_events)
+    
+    if not all_events:
+        print("    Warning: No valid events created")
+        return None
+        
+    events = np.vstack(all_events)
+    events = events[events[:, 0].argsort()]  # Sort by time
+    
+    # Erstelle Epochen
+    epochs = mne.Epochs(
+        temp_raw,
+        events=events,
+        event_id=event_id,
+        tmin=config.tmin,
+        tmax=config.tmax,
+        baseline=config.baseline,
+        picks=config.picks,
+        reject=config.reject,
+        preload=True,
+        verbose=False
+    )
+    
+    print(f"    Created {len(epochs)} epochs from {len(annotation_indices)} annotations")
+    
+    return epochs
+
+
+def create_simple_train_test_split(raw):
+    """Erstellt einen einfachen Train/Test Split basierend auf den ersten/zweiten Phasen.
+    
+    Jede n-back Bedingung hat genau 2 Phasen:
+    - Training: Erste Phase jeder Bedingung
+    - Testing: Zweite Phase jeder Bedingung
+    
+    Returns
+    -------
+    tuple
+        (train_annotation_indices, test_annotation_indices)
+    """
+    # Sammle alle Annotationen und gruppiere nach Task-Typ
+    task_groups = {'1-back': [], '2-back': [], '3-back': []}
+    baseline_indices = []
+    
+    for i, annot in enumerate(raw.annotations):
+        desc = annot['description']
+        if desc in task_groups:
+            task_groups[desc].append((i, annot['onset']))
+        elif desc == 'baseline':
+            baseline_indices.append(i)
+    
+    print("Task annotation distribution:")
+    for task, annotations in task_groups.items():
+        print(f"  {task}: {len(annotations)} blocks")
+    
+    train_indices = []
+    test_indices = []
+    
+    # Für jede Task-Kategorie: erste Phase -> Train, zweite Phase -> Test
+    for task_type, annotations in task_groups.items():
+        if len(annotations) != 2:
+            raise ValueError(f"Erwarte genau 2 Phasen für {task_type}, gefunden: {len(annotations)}")
+        
+        # Sortiere nach Zeit (onset)
+        annotations_sorted = sorted(annotations, key=lambda x: x[1])
+        
+        # Erste Phase -> Training, Zweite Phase -> Testing
+        train_indices.append(annotations_sorted[0][0])  # Index der ersten Phase
+        test_indices.append(annotations_sorted[1][0])   # Index der zweiten Phase
+        
+        print(f"  {task_type}: Phase 1 (Train) at {annotations_sorted[0][1]:.1f}s, Phase 2 (Test) at {annotations_sorted[1][1]:.1f}s")
+    
+    # Baseline immer zum Training hinzufügen
+    train_indices.extend(baseline_indices)
+    
+    print(f"\nSplit: {len(train_indices)} train annotations ({len(baseline_indices)} baseline + {len(train_indices)-len(baseline_indices)} task), {len(test_indices)} test annotations")
+    
+    return sorted(train_indices), sorted(test_indices)
 
 
 def add_metadata_with_targets(epochs):
+    """Fügt Metadaten mit Targets hinzu, filtert Baseline-Epochen aus."""
     target_map = {"1-back": 0, "2-back": 1, "3-back": 2}
 
+    # Filtere nur Task-Epochen (keine Baseline)
+    task_conditions = list(target_map.keys())
+    
+    # Prüfe welche Task-Bedingungen in den Epochen vorhanden sind
+    available_task_conditions = [cond for cond in task_conditions if cond in epochs.event_id]
+    
+    if not available_task_conditions:
+        print("Warning: Keine Task-Bedingungen in den Epochen gefunden!")
+        return None
+    
+    print(f"Verfügbare Task-Bedingungen: {available_task_conditions}")
+    
+    # Filtere Epochen: nur Task-Epochen behalten
+    task_epochs = epochs[available_task_conditions]
+    
     try:
         event_mapping = {
             original_id: target_map[condition]
-            for condition, original_id in epochs.event_id.items()
+            for condition, original_id in task_epochs.event_id.items()
             if condition in target_map
         }
     except KeyError as e:
         raise RuntimeError(
             f"Bedingung '{e.args[0]}' aus target_map nicht in epochs.event_id gefunden. "
-            f"Verfügbare Bedingungen: {list(epochs.event_id.keys())}"
+            f"Verfügbare Bedingungen: {list(task_epochs.event_id.keys())}"
         )
 
-    epochs_with_meta = epochs.copy()
+    epochs_with_meta = task_epochs.copy()
 
     try:
         targets = [
@@ -80,10 +288,12 @@ def add_metadata_with_targets(epochs):
     epochs_with_meta.event_id = target_map
 
     print("\nMetadaten mit 'target'-Spalte erfolgreich hinzugefügt.")
+    print(f"Gefilterte Epochen: {len(epochs)} -> {len(epochs_with_meta)} (nur Tasks)")
     print("Verwendetes direktes Mapping (Original-ID -> Target):", event_mapping)
     print("Events wurden auf 0, 1, 2 remapped")
-    print("Beispiel-Metadaten:")
-    print(epochs_with_meta.metadata.head())
+    if len(epochs_with_meta.metadata) > 0:
+        print("Beispiel-Metadaten:")
+        print(epochs_with_meta.metadata.head())
 
     return epochs_with_meta
 
@@ -195,23 +405,6 @@ def augment_eeg_data(epochs, augment_factor=2):
     return augmented_epochs
 
 
-def create_cv_splits(epochs, n_splits):
-    targets = epochs.metadata["target"].values
-
-    print(
-        f"\nVerwende StratifiedKFold mit {n_splits} Splits (shuffle=True, random_state=42)"
-    )
-
-    # Zeige Klassenverteilung
-    unique_targets, target_counts = np.unique(targets, return_counts=True)
-    print("Gesamte Klassenverteilung:")
-    for target, count in zip(unique_targets, target_counts):
-        print(f"  Klasse {target}: {count} Epochen ({count / len(targets) * 100:.1f}%)")
-
-    cv_splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-    return cv_splitter
-
-
 def get_model(model_name, n_chans, n_classes, epoch_length_s, sfreq, config):
     if model_name == "EEGNet":
         return EEGNet(
@@ -257,208 +450,248 @@ def get_model(model_name, n_chans, n_classes, epoch_length_s, sfreq, config):
         )
     
     else:
-        raise ValueError(f"Unbekanntes Modell: {model_name}. Verfügbar: EEGNet, ShallowFBCSPNet, Deep4Net, ATCNet, EEGNetv4")
+        raise ValueError(f"Unbekanntes Modell: {model_name}. Verfügbar: EEGNet, ShallowFBCSPNet, ATCNet, AttentionBaseNet")
 
 
-def train_eegnet_with_cv():
+def train_eegnet_simplified():
+    """Vereinfachtes Training mit Focal Loss und ShallowFBCSPNet für bessere EEG-Performance."""
     config = {
-        "model_name": "AttentionBaseNet",  # Optimiertes AttentionBaseNet
-        "n_splits": 3,  # 3 Folds für Balance zwischen Genauigkeit und Geschwindigkeit
+        "model_name": "ATCNet",  # Bewährtes Modell für EEG
         
-        # Optimierte Hyperparameter für AttentionBaseNet
-        "lr": 0.0005,  # Niedrigere LR für stabileres Training bei Attention-Modellen
-        "batch_size": 12,  # Kleinere Batch Size für bessere Gradientenqualität
-        "max_epochs": 120,  # Mehr Epochen da Attention-Modelle langsamer konvergieren
+        # Optimierte Hyperparameter für ShallowFBCSP + Focal Loss
+        "lr": 0.0005,  # Höher als EEGNet, aber kontrolliert
+        "batch_size": 16,
+        "max_epochs": 20,  # Mehr Epochen für bessere Konvergenz
         
-        # Modell-spezifische Parameter
-        "kernel_length": 32,  # Kürzere Kernel für feinere Features
-        "F1": 24,  # Mehr Filter in erster Schicht
-        "D": 6,   # Tiefere Depthwise Convolution
-        "F2": 48, # Mehr Filter in zweiter Schicht
+        # ShallowFBCSPNet-spezifische Parameter
+        "kernel_length": 64,
+        "F1": 8,
+        "D": 2,
+        "F2": 16,
         
-        # Regularisierung optimiert für Attention
-        "dropout_rate": 0.5,  # Höherer Dropout da Attention-Modelle zu Overfitting neigen
-        "weight_decay": 0.005,  # Stärkere L2-Regularisierung
+        # Optimierte Regularisierung
+        "dropout_rate": 0.35,
+        "weight_decay": 0.01,
         
         # Training-Optimierungen
-        "patience": 25,  # Mehr Geduld für Attention-Konvergenz
-        "augmentation_factor": 3,  # Mehr Datenaugmentation für robustere Features
+        "patience": 25,
+        "augmentation_factor": 1,
         
-        # Preprocessing optimiert für kognitive Aufgaben
-        "filter_low": 0.5,   # Niedrigere untere Grenze für langsame Wellen
-        "filter_high": 35.0, # Höhere obere Grenze für Gamma-Band
+        # Standard Preprocessing
+        "filter_low": 1.0,
+        "filter_high": 40.0, 
         
-        # Zusätzliche Attention-spezifische Parameter
-        "label_smoothing": 0.15,  # Höheres Label Smoothing
-        "warmup_epochs": 10,      # Warmup für stabilere Attention-Gewichte
+        # Focal Loss Configuration
+        "use_focal_loss": True,
+        "focal_alpha": 1.0,
+        "focal_gamma": 2.0,
+        "label_smoothing": 0.0,  # Deaktiviert bei Focal Loss
+        "use_manual_class_weights": False,  # Focal Loss handhabt Balance
     }
 
-    epochs, baseline_epochs = load_and_prepare_data()
-    epochs = normalize_epochs_with_baseline(epochs, baseline_epochs, config)
-    epochs = add_metadata_with_targets(epochs)
-
-    sfreq = epochs.info["sfreq"]
-
-    epoch_length_s = epochs.times[-1] - epochs.times[0]
-    window_size_samples = len(epochs.times)
-
-    window_stride_samples = window_size_samples
-
-    print(f"Epochenlänge: {epoch_length_s:.2f}s ({window_size_samples} samples)")
-    print(f"Sampling frequency: {sfreq}Hz")
-
-    n_chans = epochs.info["nchan"]
-    n_classes = len(epochs.event_id)
+    # Lade Raw-Daten
+    print("Loading raw data...")
+    raw = load_and_prepare_raw_data()
+    
+    # Erstelle einfachen Train/Test Split basierend auf ersten/zweiten Phasen
+    print("\nCreating simple train/test split...")
+    train_annotation_indices, test_annotation_indices = create_simple_train_test_split(raw)
+    
+    # Baseline-Epochen für Normalisierung
+    print("\nCreating baseline epochs for normalization...")
+    baseline_annotation_indices = [i for i, annot in enumerate(raw.annotations) 
+                                   if annot['description'] == 'baseline']
+    baseline_epochs = create_epochs_for_split(raw, baseline_annotation_indices, use_overlap=False)
+    
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"\nVerwende Gerät: {device}")
-    print(f"Anzahl Klassen: {n_classes}")
-    print(f"Anzahl Kanäle: {n_chans}")
-
-    n_splits = config["n_splits"]
-
-    # Erstelle einfache StratifiedKFold Splits
-    cv_splitter = create_cv_splits(epochs, n_splits)
-
-    all_fold_accuracies, all_fold_f1_scores = [], []
-
-    # Cross-validation durchführen
-    for fold, (train_idx, test_idx) in enumerate(
-        cv_splitter.split(X=epochs.get_data(), y=epochs.metadata["target"])
-    ):
-        print(f"\n--- Starte Fold {fold + 1}/{n_splits} ---")
-
-        model = get_model(
-            model_name=config["model_name"],
-            n_chans=n_chans,
-            n_classes=n_classes,
-            epoch_length_s=epoch_length_s,
-            sfreq=sfreq,
-            config=config,
-        )
-
-        train_epochs = epochs[train_idx]
-        test_epochs = epochs[test_idx]
-
-        # Data Augmentation mit erhöhtem Faktor
-        train_epochs_augmented = augment_eeg_data(train_epochs, augment_factor=config["augmentation_factor"])
-
-        print(
-            f"Train/Test Split: {len(train_epochs_augmented)}/{len(test_epochs)} Epochen (nach Augmentation)"
-        )
-
-        # Erstelle Datasets mit korrigiertem Windowing
-        train_dataset = create_from_mne_epochs(
-            [train_epochs_augmented],
-            window_size_samples=window_size_samples,
-            window_stride_samples=window_stride_samples,
-            drop_last_window=False,
-        )
-
-        test_dataset = create_from_mne_epochs(
-            [test_epochs],
-            window_size_samples=window_size_samples,
-            window_stride_samples=window_stride_samples,
-            drop_last_window=False,
-        )
-
-        print(
-            f"Trainingsdaten: {len(train_epochs_augmented)} Epochen -> {len(train_dataset)} Fenster"
-        )
-        print(
-            f"Testdaten:      {len(test_epochs)} Epochen -> {len(test_dataset)} Fenster"
-        )
-
-        # Berechne Klassengewichte für unbalancierte Daten
-        from sklearn.utils.class_weight import compute_class_weight
-
-        unique_targets = np.unique(epochs.metadata["target"])
-        class_weights = compute_class_weight(
-            "balanced", classes=unique_targets, y=epochs.metadata["target"]
-        )
-        class_weight_dict = dict(zip(unique_targets, class_weights))
-        print(f"Klassengewichte: {class_weight_dict}")
-
-        clf = EEGClassifier(
-            model,
-            criterion=torch.nn.CrossEntropyLoss,
-            criterion__weight=torch.FloatTensor(
-                [class_weights[i] for i in range(len(class_weights))]
-            ),
-            criterion__label_smoothing=config["label_smoothing"],  # Optimiertes Label Smoothing
-            optimizer=torch.optim.AdamW,
-            optimizer__lr=config["lr"],
-            optimizer__weight_decay=config["weight_decay"],
-            optimizer__betas=(0.9, 0.999),  # Optimierte Adam Parameter
-            optimizer__eps=1e-8,  # Numerische Stabilität
-            batch_size=config["batch_size"],
-            max_epochs=config["max_epochs"],
-            train_split=predefined_split(test_dataset),
-            device=device,
-            classes=[0, 1, 2],
-            callbacks=[
-                (
-                    "lr_scheduler",
-                    LRScheduler("CosineAnnealingLR", T_max=config["max_epochs"] - 1),
-                ),
-            ],
-            verbose=1,
-        )
-
-        print("Starte Training für diesen Fold...")
-        clf.fit(train_dataset, y=None)
-
-        y_true = [y for x, y, i in test_dataset]
-        y_pred = clf.predict(test_dataset)
-
-        # Analysiere Vorhersageverteilung
-        pred_unique, pred_counts = np.unique(y_pred, return_counts=True)
-        true_unique, true_counts = np.unique(y_true, return_counts=True)
-
-        print(f"Training beendet nach {len(clf.history)} Epochen.")
-        print(
-            f"\nTest-Set Klassenverteilung (Ground Truth): {dict(zip(true_unique, true_counts))}"
-        )
-        print(f"Vorhergesagte Klassenverteilung: {dict(zip(pred_unique, pred_counts))}")
-
-        print("\nKonfusionsmatrix:")
-        print(confusion_matrix(y_true, y_pred))
-        print("\nClassification Report:")
-        print(
-            classification_report(
-                y_true,
-                y_pred,
-                target_names=["1-back", "2-back", "3-back"],
-                zero_division=0,
-            )
-        )
-
-        valid_acc = clf.history[-1, "valid_acc"]
-        valid_f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
-
-        all_fold_accuracies.append(valid_acc)
-        all_fold_f1_scores.append(valid_f1)
-        print(
-            f"Fold {fold + 1} - Validation Accuracy: {valid_acc:.4f}, F1-Score: {valid_f1:.4f}"
-        )
-
-    # --- 3. Ergebnisse zusammenfassen ---
-    mean_accuracy = np.mean(all_fold_accuracies)
-    std_accuracy = np.std(all_fold_accuracies)
-
-    print("\n\n--- Kreuzvalidierung abgeschlossen ---")
-    print(
-        f"Genauigkeiten der einzelnen Folds: {[f'{acc:.4f}' for acc in all_fold_accuracies]}"
+    print(f"\nUsing device: {device}")
+    
+    # Epoching für Training und Test
+    print("\nCreating training epochs (with overlap)...")
+    train_epochs = create_epochs_for_split(
+        raw, train_annotation_indices, use_overlap=True, segment_length=4.0, overlap=2.0
     )
-    print(f"Durchschnittliche Genauigkeit: {mean_accuracy:.4f}")
-    print(f"Standardabweichung der Genauigkeit: {std_accuracy:.4f}")
+    
+    print("Creating test epochs (without overlap)...")
+    test_epochs = create_epochs_for_split(
+        raw, test_annotation_indices, use_overlap=False, segment_length=4.0, overlap=0.0
+    )
+    
+    if train_epochs is None or test_epochs is None:
+        raise RuntimeError("Failed to create epochs")
+        
+    # Normalisierung mit Baseline
+    train_epochs = normalize_epochs_with_baseline(train_epochs, baseline_epochs, config)
+    test_epochs = normalize_epochs_with_baseline(test_epochs, baseline_epochs, config)
+    
+    # Metadaten und Targets hinzufügen
+    train_epochs = add_metadata_with_targets(train_epochs)
+    test_epochs = add_metadata_with_targets(test_epochs)
+    
+    # Datenaugmentation nur auf Training-Daten (nur wenn Faktor > 1)
+    if config["augmentation_factor"] > 1:
+        train_epochs_augmented = augment_eeg_data(train_epochs, augment_factor=config["augmentation_factor"])
+        print(f"Data augmented: {len(train_epochs)} -> {len(train_epochs_augmented)} epochs")
+    else:
+        train_epochs_augmented = train_epochs
+        print(f"No augmentation applied: {len(train_epochs_augmented)} training epochs")
+    
+    print(f"\nFinal Train/Test Split: {len(train_epochs_augmented)}/{len(test_epochs)} epochs")
+    
+    # Model-Parameter
+    sfreq = train_epochs.info["sfreq"] 
+    epoch_length_s = train_epochs.times[-1] - train_epochs.times[0]
+    window_size_samples = len(train_epochs.times)
+    window_stride_samples = window_size_samples
+    n_chans = train_epochs.info["nchan"]
+    n_classes = len(train_epochs.event_id)
+    
+    print(f"Epoch length: {epoch_length_s:.2f}s ({window_size_samples} samples)")
+    print(f"Sampling frequency: {sfreq}Hz")
+    print(f"Channels: {n_chans}, Classes: {n_classes}")
+    
+    # Model erstellen
+    model = get_model(
+        model_name=config["model_name"],
+        n_chans=n_chans,
+        n_classes=n_classes,
+        epoch_length_s=epoch_length_s,
+        sfreq=sfreq,
+        config=config,
+    )
+    
+    # Datasets erstellen
+    train_dataset = create_from_mne_epochs(
+        [train_epochs_augmented],
+        window_size_samples=window_size_samples,
+        window_stride_samples=window_stride_samples,
+        drop_last_window=False,
+    )
 
-    return all_fold_accuracies
+    test_dataset = create_from_mne_epochs(
+        [test_epochs],
+        window_size_samples=window_size_samples,
+        window_stride_samples=window_stride_samples,
+        drop_last_window=False,
+    )
+
+    print(f"Training data: {len(train_epochs_augmented)} epochs -> {len(train_dataset)} windows")
+    print(f"Test data: {len(test_epochs)} epochs -> {len(test_dataset)} windows")
+
+    # Klassengewichte berechnen
+    from sklearn.utils.class_weight import compute_class_weight
+    
+    # Zeige Training-Daten-Verteilung für Debugging
+    train_target_counts = train_epochs_augmented.metadata["target"].value_counts().sort_index()
+    print(f"Training data class distribution: {dict(train_target_counts)}")
+    
+    unique_targets = np.unique(train_epochs.metadata["target"])  # Nutze ursprüngliche Daten für Balance
+    
+    if config.get("use_manual_class_weights", False):
+        # Manuelle gleichmäßige Gewichtung
+        class_weights = np.ones(len(unique_targets))
+        print("Using manual equal class weights: [1.0, 1.0, 1.0]")
+    else:
+        # Automatische Berechnung
+        class_weights = compute_class_weight(
+            "balanced", classes=unique_targets, y=train_epochs.metadata["target"]
+        )
+        print(f"Using computed balanced class weights: {class_weights}")
+    
+    class_weight_dict = dict(zip(unique_targets, class_weights))
+    print(f"Final class weight mapping: {class_weight_dict}")
+
+    # Loss Function auswählen
+    if config.get("use_focal_loss", False):
+        criterion = FocalLoss(
+            alpha=config["focal_alpha"],
+            gamma=config["focal_gamma"],
+            weight=torch.FloatTensor([class_weights[i] for i in range(len(class_weights))])
+        )
+        criterion_params = {}
+        print(f"🎯 Using Focal Loss (alpha={config['focal_alpha']}, gamma={config['focal_gamma']}) for Class Imbalance")
+    else:
+        criterion = torch.nn.CrossEntropyLoss
+        criterion_params = {
+            "weight": torch.FloatTensor([class_weights[i] for i in range(len(class_weights))]),
+            "label_smoothing": config["label_smoothing"]
+        }
+        print("Using standard CrossEntropy Loss")
+
+    # Classifier erstellen und trainieren
+    clf = EEGClassifier(
+        model,
+        criterion=criterion,
+        **{f"criterion__{k}": v for k, v in criterion_params.items()},
+        optimizer=torch.optim.AdamW,
+        optimizer__lr=config["lr"],
+        optimizer__weight_decay=config["weight_decay"],
+        optimizer__betas=(0.9, 0.999),
+        optimizer__eps=1e-8,
+        batch_size=config["batch_size"],
+        max_epochs=config["max_epochs"],
+        train_split=predefined_split(test_dataset),
+        device=device,
+        classes=[0, 1, 2],
+        callbacks=[
+            (
+                "lr_scheduler",
+                LRScheduler("CosineAnnealingLR", T_max=config["max_epochs"] - 1),
+            ),
+        ],
+        verbose=1,
+    )
+
+    print("\n🚀 Starting training with ADVANCED configuration...")
+    print(f"Model: {config['model_name']}")  
+    print(f"Loss: {'Focal Loss' if config.get('use_focal_loss') else 'CrossEntropy'}")
+    print(f"LR: {config['lr']}, Batch Size: {config['batch_size']}, Epochs: {config['max_epochs']}")
+    print(f"Augmentation: {config['augmentation_factor']}x")
+    
+    clf.fit(train_dataset, y=None)
+
+    # Evaluation
+    y_true = [y for x, y, i in test_dataset]
+    y_pred = clf.predict(test_dataset)
+
+    # Analysiere Vorhersageverteilung
+    pred_unique, pred_counts = np.unique(y_pred, return_counts=True)
+    true_unique, true_counts = np.unique(y_true, return_counts=True)
+
+    print(f"\nTraining completed after {len(clf.history)} epochs.")
+    print(f"Test-Set class distribution (Ground Truth): {dict(zip(true_unique, true_counts))}")
+    print(f"Predicted class distribution: {dict(zip(pred_unique, pred_counts))}")
+
+    print("\nConfusion Matrix:")
+    print(confusion_matrix(y_true, y_pred))
+    print("\nClassification Report:")
+    print(
+        classification_report(
+            y_true,
+            y_pred,
+            target_names=["1-back", "2-back", "3-back"],
+            zero_division=0,
+        )
+    )
+
+    final_acc = clf.history[-1, "valid_acc"]
+    final_f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
+
+    print("\n--- Final Results (Phase-based Train/Test Split) ---")
+    print(f"Test Accuracy: {final_acc:.4f}")
+    print(f"Test F1-Score: {final_f1:.4f}")
+    print("\nNote: This approach uses first phases for training, second phases for testing.")
+    print("This eliminates data leakage while maintaining temporal structure.")
+
+    return final_acc, final_f1
 
 
 if __name__ == "__main__":
     try:
-        results = train_eegnet_with_cv()
-        print("\nTraining and cross-validation completed successfully!")
+        accuracy, f1_score_result = train_eegnet_simplified()
+        print("\nTraining completed successfully!")
+        print(f"Final Test Accuracy: {accuracy:.4f}")
+        print(f"Final Test F1-Score: {f1_score_result:.4f}")
     except Exception as e:
         print(f"\nEin Fehler ist aufgetreten: {e}")
         import traceback
