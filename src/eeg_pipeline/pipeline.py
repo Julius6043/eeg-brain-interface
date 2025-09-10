@@ -24,12 +24,13 @@ from eeg_pipeline.plot import PlotConfig
 from eeg_pipeline.data_loading import DataLoadingConfig, SessionData, load_all_sessions
 from eeg_pipeline.preprocessing import PreprocessingConfig, preprocess_raw
 from eeg_pipeline.marker_annotation import annotate_raw_with_markers
-from eeg_pipeline.epoching import (
-    EpochingConfig,
-    create_epochs_from_raw,
-    validate_epochs,
-)
-import mne
+# Epoching imports disabled - moved to model training to prevent data leakage
+# from eeg_pipeline.epoching import (
+#     EpochingConfig,
+#     create_epochs_from_raw,
+#     validate_epochs,
+# )
+# import mne
 
 
 @dataclass
@@ -52,7 +53,7 @@ class PipelineConfig:
 
     data_loading: DataLoadingConfig
     preprocessing: PreprocessingConfig
-    epoching: Optional[EpochingConfig] = None
+    epoching: Optional[object] = None  # EpochingConfig - disabled to prevent data leakage
     plot: PlotConfig = None
     output_dir: Optional[Path] = None
 
@@ -111,30 +112,32 @@ class EEGPipeline:
                 print(f"  ✓ Outdoor annotations added for {session.participant_name}")
         print("✓ Marker-Annotation abgeschlossen")
 
-        # 4. Epoching
-        if self.config.epoching:
+        # 4. Epoching (DISABLED - moved to model training to prevent data leakage)
+        # Epoching wird jetzt in der Trainingsschleife durchgeführt, um Data Leakage 
+        # durch überlappende Segmente bei Cross-Validation zu vermeiden
+        if False and self.config.epoching:
             print("\nStep 4: Epoching")
-            for session in self.sessions:
-                if session.participant_name == "jannik":
-                    continue
-                if session.indoor_session and session.indoor_session.annotations:
-                    session.indoor_epochs = create_epochs_from_raw(
-                        session.indoor_session, self.config.epoching
-                    )
-                    if session.indoor_epochs:
-                        print(
-                            f"  ✓ Indoor epochs created for {session.participant_name}: {len(session.indoor_epochs)} epochs"
-                        )
-
-                if session.outdoor_session and session.outdoor_session.annotations:
-                    session.outdoor_epochs = create_epochs_from_raw(
-                        session.outdoor_session, self.config.epoching
-                    )
-                    if session.outdoor_epochs:
-                        print(
-                            f"  ✓ Outdoor epochs created for {session.participant_name}: {len(session.outdoor_epochs)} epochs"
-                        )
-            print("✓ Epoching abgeschlossen")
+            # for session in self.sessions:
+            #     if session.participant_name == "jannik":
+            #         continue
+            #     if session.indoor_session and session.indoor_session.annotations:
+            #         session.indoor_epochs = create_epochs_from_raw(
+            #             session.indoor_session, self.config.epoching
+            #         )
+            #         if session.indoor_epochs:
+            #             print(
+            #                 f"  ✓ Indoor epochs created for {session.participant_name}: {len(session.indoor_epochs)} epochs"
+            #             )
+            #
+            #     if session.outdoor_session and session.outdoor_session.annotations:
+            #         session.outdoor_epochs = create_epochs_from_raw(
+            #             session.outdoor_session, self.config.epoching
+            #         )
+            #         if session.outdoor_epochs:
+            #             print(
+            #                 f"  ✓ Outdoor epochs created for {session.participant_name}: {len(session.outdoor_epochs)} epochs"
+            #             )
+            # print("✓ Epoching abgeschlossen")
 
         # 5. Plot (Platzhalter) – könnte später differenziert werden (PSD, ERP, …)
         if self.config.plot:
@@ -144,7 +147,7 @@ class EEGPipeline:
 
         # 6. Persistierung
         if self.config.output_dir:
-            print("\nStep 4: Save processed data")
+            print("\nStep 5: Save processed data")
             self._save_processed_data()
 
         print("\nPipeline finished!")
@@ -180,6 +183,9 @@ class EEGPipeline:
             else:
                 print("    ⚠ Keine Outdoor-Session verfügbar")
 
+            # Epoching-spezifische Speicherung deaktiviert
+            # Epochen werden jetzt dynamisch während des Trainings erstellt
+            """
             if session.indoor_epochs:
                 validate_epochs(session.indoor_epochs)
 
@@ -223,6 +229,7 @@ class EEGPipeline:
                 print(
                     f"    ✓ Outdoor-Epochen gespeichert und validiert ({len(loaded_epochs)} Epochen)"
                 )
+            """
 
         print(
             f"✓ Alle Daten erfolgreich gespeichert und validiert in {self.config.output_dir}"
@@ -244,7 +251,7 @@ def create_default_config() -> PipelineConfig:
             montage="standard_1020",
         ),
         preprocessing=PreprocessingConfig(l_freq=4.0, h_freq=40.0, notch_freq=50.0),
-        epoching=EpochingConfig(),  # Aktiviere Epoching mit Standard-Parametern
+        epoching=None,  # EpochingConfig() - disabled to prevent data leakage in CV
         plot=None,
     )
 
