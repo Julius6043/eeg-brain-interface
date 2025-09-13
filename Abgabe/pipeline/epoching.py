@@ -1,14 +1,14 @@
 """Epoching Module for EEG Pipeline.
 
-Dieses Modul konvertiert annotierte Raw EEG-Daten in Epochen basierend auf
-den Marker-Annotationen. Jede Epoche entspricht einem experimentellen Block
-oder einer Baseline-Periode.
+This module converts annotated Raw EEG data into epochs based on
+the marker annotations. Each epoch corresponds to an experimental block
+or a baseline period.
 
-Funktionalität:
-    * Extraktion von Epochen aus Raw-Daten basierend auf Annotationen
-    * Labeling mit Block-Namen und n-back Schwierigkeitsgraden
-    * Erstellung von MNE Epochs-Objekten mit Metadaten
-    * 3D-Datenstruktur: (Epochen x Kanäle x Zeit)
+Functionality:
+    * Extraction of epochs from Raw data based on annotations
+    * Labeling with block names and n-back difficulty levels
+    * Creation of MNE Epochs objects with metadata
+    * 3D data structure: (Epochs x Channels x Time)
 """
 
 from dataclasses import dataclass
@@ -21,25 +21,12 @@ from mne.io import Raw
 
 @dataclass
 class EpochingConfig:
-    """Konfiguration für Epoching-Parameter.
-
-    Attribute
-    ---------
-    tmin : float
-        Start-Zeit relativ zum Event-Onset (in Sekunden, typisch 0.0)
-    tmax : float
-        End-Zeit relativ zum Event-Onset (in Sekunden, None = gesamte Annotation)
-    baseline : tuple or None
-        Baseline-Korrektur Zeitfenster (tmin, tmax) in Sekunden
-    picks : list or None
-        Kanäle zum Epoching (None = alle EEG-Kanäle)
-    reject : dict or None
-        Artifact rejection criteria (z.B. {'eeg': 100e-6} für 100µV)
+    """Configuration for epoching parameters.
     """
 
     tmin: float = 0.0
     tmax: Optional[float] = None  # None = use full annotation duration
-    baseline: Optional[Tuple[float, float]] = None  # (None, 0) für pre-stimulus baseline
+    baseline: Optional[Tuple[float, float]] = None  # (None, 0) for pre-stimulus baseline
     picks: Optional[List[str]] = None
     reject: Optional[Dict[str, float]] = None
 
@@ -47,25 +34,13 @@ class EpochingConfig:
 def create_epochs_from_raw(
         raw: Raw, config: EpochingConfig = None
 ) -> Optional[mne.Epochs]:
-    """Erstellt Epochen aus annotiertem Raw-Objekt mit 4s Segmenten und 2s Overlap.
-
-    Parameter
-    ---------
-    raw : mne.io.Raw
-        Raw-Objekt mit n-back Annotationen
-    config : EpochingConfig, optional
-        Epoching-Konfiguration
-
-    Rückgabe
-    --------
-    mne.Epochs or None
-        Standard MNE Epochs-Objekt mit Metadaten für automatische Konvertierung
+    """Creates epochs from an annotated Raw object with 4s segments and 2s overlap.
     """
     if config is None:
         config = EpochingConfig(tmin=0.0, tmax=4.0)
 
     if not raw.annotations or len(raw.annotations) == 0:
-        print("[WARN] Keine Annotationen in Raw-Objekt gefunden")
+        print("[WARN] No annotations found in Raw object")
         return None
 
     segment_length = 4.0
@@ -82,7 +57,6 @@ def create_epochs_from_raw(
 
     for block_idx, annot in enumerate(raw.annotations):
         description = annot['description']
-
         start_time = annot['onset']
         duration = annot['duration']
 
@@ -96,24 +70,24 @@ def create_epochs_from_raw(
         )
 
         if len(block_events) == 0:
-            print(f"    Keine Segmente für Block {block_idx} (zu kurz)")
+            print(f"      No segments for block {block_idx} (too short)")
             continue
 
-        print(f"    → {len(block_events)} Segmente à {segment_length}s")
+        print(f"      → {len(block_events)} segments of {segment_length}s")
         all_events.append(block_events)
 
     if not all_events:
-        print("[WARN] Keine gültigen Events erstellt")
+        print("[WARN] No valid events created")
         return None
 
     events = np.vstack(all_events)
     events = events[events[:, 0].argsort()]
 
-    print(f"\n[INFO] Erstelle {len(events)} Epochen...")
-    print(f"  - Event IDs: {event_id}")
+    print(f"\n[INFO] Creating {len(events)} epochs...")
+    print(f"   - Event IDs: {event_id}")
 
     try:
-        # Standard MNE Epochs erstellen
+        # Create standard MNE Epochs
         epochs = mne.Epochs(
             raw,
             events=events,
@@ -128,45 +102,35 @@ def create_epochs_from_raw(
         )
 
         data_shape = epochs.get_data().shape
-        print(f"[SUCCESS] {len(epochs)} Epochen erstellt")
-        print(f"  - Form: {data_shape}")
+        print(f"[SUCCESS] {len(epochs)} epochs created")
+        print(f"   - Shape: {data_shape}")
 
-        assert epochs is not None, "Epochs-Objekt ist None"
-        assert len(epochs) > 0, "Keine Epochen erstellt"
+        assert epochs is not None, "Epochs object is None"
+        assert len(epochs) > 0, "No epochs were created"
 
-        assert len(data_shape) == 3, f"Erwarte 3D-Daten, erhalten: {len(data_shape)}D"
-        assert data_shape[0] > 0, "Keine Epochen in Datenmatrix"
-        assert data_shape[1] > 0, "Keine Kanäle in Datenmatrix"
-        assert data_shape[2] > 0, "Keine Zeitpunkte in Datenmatrix"
+        assert len(data_shape) == 3, f"Expected 3D data, but got: {len(data_shape)}D"
+        assert data_shape[0] > 0, "No epochs in data matrix"
+        assert data_shape[1] > 0, "No channels in data matrix"
+        assert data_shape[2] > 0, "No time points in data matrix"
 
-        assert hasattr(epochs, 'event_id'), "Event-ID Dictionary fehlt"
-        assert len(epochs.event_id) > 0, "Event-ID Dictionary ist leer"
-        assert epochs.info['sfreq'] > 0, "Ungültige Sampling-Rate"
+        assert hasattr(epochs, 'event_id'), "Event ID dictionary is missing"
+        assert len(epochs.event_id) > 0, "Event ID dictionary is empty"
+        assert epochs.info['sfreq'] > 0, "Invalid sampling rate"
 
         onset_times = epochs.events[:, 0] / epochs.info['sfreq']
-        assert np.all(onset_times[:-1] <= onset_times[1:]), "Events nicht chronologisch sortiert"
+        assert np.all(onset_times[:-1] <= onset_times[1:]), "Events are not sorted chronologically"
 
         return epochs
 
     except Exception as e:
-        print(f"[ERROR] Fehler beim Epoching: {e}")
+        print(f"[ERROR] Error during epoching: {e}")
         import traceback
         traceback.print_exc()
         return None
 
 
 def get_epochs_summary(epochs: mne.Epochs) -> pd.DataFrame:
-    """Erstellt eine Zusammenfassung der Epochen-Verteilung.
-
-    Parameter
-    ---------
-    epochs : mne.Epochs
-        MNE Epochs-Objekt
-
-    Rückgabe
-    --------
-    pd.DataFrame
-        Zusammenfassung mit Event-Namen und Anzahl
+    """Creates a summary of the epoch distribution.
     """
     summary_data = []
 
@@ -183,35 +147,25 @@ def get_epochs_summary(epochs: mne.Epochs) -> pd.DataFrame:
 
 
 def epochs_to_dataframe(epochs: mne.Epochs) -> pd.DataFrame:
-    """Konvertiert Epochen zu DataFrame für pandas/scikit-learn.
-
-    Parameter
-    ---------
-    epochs : mne.Epochs
-        MNE Epochs-Objekt
-
-    Rückgabe
-    --------
-    pd.DataFrame
-        DataFrame mit Features als Spalten und Labels
+    """Converts epochs to a DataFrame for pandas/scikit-learn.
     """
-    # Daten extrahieren und zu 2D umformen
+    # Extract data and reshape to 2D
     data = epochs.get_data()  # (n_epochs, n_channels, n_timepoints)
     n_epochs, n_channels, n_timepoints = data.shape
 
-    # Zu 2D umformen: (n_epochs, n_features)
+    # Reshape to 2D: (n_epochs, n_features)
     data_2d = data.reshape(n_epochs, n_channels * n_timepoints)
 
-    # Feature-Namen erstellen
+    # Create feature names
     feature_names = []
     for ch_idx, ch_name in enumerate(epochs.ch_names):
         for time_idx in range(n_timepoints):
             feature_names.append(f"{ch_name}_t{time_idx}")
 
-    # DataFrame erstellen
+    # Create DataFrame
     df = pd.DataFrame(data_2d, columns=feature_names)
 
-    # Labels hinzufügen (reverse lookup von event_id)
+    # Add labels (reverse lookup from event_id)
     id_to_name = {v: k for k, v in epochs.event_id.items()}
     df['label'] = [id_to_name[event_id] for event_id in epochs.events[:, 2]]
 
@@ -219,56 +173,46 @@ def epochs_to_dataframe(epochs: mne.Epochs) -> pd.DataFrame:
 
 
 def validate_epochs(epochs: mne.Epochs) -> None:
-    """Validiert das Epoching-Ergebnis mit Asserts.
-    
-    Parameter
-    ---------
-    epochs : mne.Epochs
-        Zu validierende Epochen
-        
-    Raises
-    ------
-    AssertionError
-        Bei Validierungsfehlern
+    """Validates the epoching result using asserts.
     """
-    # Basis-Validierung
-    assert epochs is not None, "Epochs-Objekt ist None"
-    assert len(epochs) > 0, "Keine Epochen erstellt"
+    # Basic validation
+    assert epochs is not None, "Epochs object is None"
+    assert len(epochs) > 0, "No epochs were created"
     
     data_shape = epochs.get_data().shape
-    assert len(data_shape) == 3, f"Erwarte 3D-Daten, erhalten: {len(data_shape)}D"
-    assert data_shape[0] > 0, "Keine Epochen in Datenmatrix"
-    assert data_shape[1] > 0, "Keine Kanäle in Datenmatrix"
-    assert data_shape[2] > 0, "Keine Zeitpunkte in Datenmatrix"
+    assert len(data_shape) == 3, f"Expected 3D data, but got: {len(data_shape)}D"
+    assert data_shape[0] > 0, "No epochs in data matrix"
+    assert data_shape[1] > 0, "No channels in data matrix"
+    assert data_shape[2] > 0, "No time points in data matrix"
     
-    assert hasattr(epochs, 'event_id'), "Event-ID Dictionary fehlt"
-    assert len(epochs.event_id) > 0, "Event-ID Dictionary ist leer"
-    assert epochs.info['sfreq'] > 0, "Ungültige Sampling-Rate"
+    assert hasattr(epochs, 'event_id'), "Event ID dictionary is missing"
+    assert len(epochs.event_id) > 0, "Event ID dictionary is empty"
+    assert epochs.info['sfreq'] > 0, "Invalid sampling rate"
     
-    # Zeitliche Konsistenz
+    # Temporal consistency
     onset_times = epochs.events[:, 0] / epochs.info['sfreq']
-    assert np.all(onset_times[:-1] <= onset_times[1:]), "Events nicht chronologisch sortiert"
+    assert np.all(onset_times[:-1] <= onset_times[1:]), "Events are not sorted chronologically"
     
-    # Abstände zwischen Events prüfen - flexiblere Validierung
+    # Check distances between events - more flexible validation
     if len(onset_times) > 1:
         time_diffs = np.diff(onset_times)
         
-        # Keine negativen Abstände
-        assert np.all(time_diffs >= 0), "Negative Zeitabstände gefunden"
+        # No negative time differences
+        assert np.all(time_diffs >= 0), "Negative time differences found"
         
-        # Prüfe Abstände innerhalb von Blöcken (sollten ~2s sein wegen Overlap)
-        # und zwischen Blöcken (können größer sein)
-        small_diffs = time_diffs[time_diffs <= 5.0]  # Innerhalb von Blöcken
-        large_diffs = time_diffs[time_diffs > 5.0]   # Zwischen Blöcken
+        # Check distances within blocks (should be ~2s due to overlap)
+        # and between blocks (can be larger)
+        small_diffs = time_diffs[time_diffs <= 5.0]  # Within blocks
+        large_diffs = time_diffs[time_diffs > 5.0]   # Between blocks
         
         if len(small_diffs) > 0:
             median_small = np.median(small_diffs)
-            assert 1.0 <= median_small <= 3.0, f"Unerwartete Intra-Block-Abstände: {median_small:.2f}s (erwartet: ~2s)"
+            assert 1.0 <= median_small <= 3.0, f"Unexpected intra-block distances: {median_small:.2f}s (expected: ~2s)"
         
-        # Überprüfe, dass große Abstände nicht zu extrem sind (max 5 Minuten zwischen Blöcken)
+        # Check that large distances are not too extreme (max 5 minutes between blocks)
         if len(large_diffs) > 0:
             max_large = np.max(large_diffs)
-            assert max_large <= 300, f"Zu große Inter-Block-Abstände: {max_large:.1f}s (max: 300s)"
-            print(f"  Info: {len(large_diffs)} Inter-Block-Übergänge gefunden (max: {max_large:.1f}s)")
+            assert max_large <= 300, f"Inter-block distances too large: {max_large:.1f}s (max: 300s)"
+            print(f"   Info: {len(large_diffs)} inter-block transitions found (max: {max_large:.1f}s)")
     
-    print(f"✓ Epochen-Validierung erfolgreich: {len(epochs)} Epochen, Form: {data_shape}")
+    print(f"✓ Epoch validation successful: {len(epochs)} epochs, shape: {data_shape}")

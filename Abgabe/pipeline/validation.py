@@ -1,46 +1,13 @@
 """Validation helpers for EEG sessions.
 
-Dieses Modul bietet einfache Qualitäts-/Sanity-Checks für geladene EEG-Aufzeichnungen
-und aggregiert Ergebnisse je Teilnehmer. Es ist bewusst leichtgewichtig gehalten und
-vermeidet tiefe statistische Analysen (kann später ergänzt werden).
-
-Checks (aktuell):
-    * Sampling Rate Untergrenze
-    * Mindestanzahl Kanäle
-    * Mindest-/Höchstdauer
-    * Grobe Amplituden-Heuristik & Nullsignal-Erkennung
-
-Verbesserungsideen:
-    * Kanalweise Varianz / Flatline-Detektion
-    * Anteil saturierter Samples (Clipping)
-    * Frequenzband-spezifische Power-Schwellen (Delta, Theta, Alpha ...)
-    * Integration in MNE Report oder JSON-Export
+Sanity-Checks
 """
-
 from dataclasses import dataclass
 from typing import List, Dict, Any
-
 from mne.io import Raw
-
-# Relative Import, damit Modul innerhalb des Pakets funktioniert
 from .data_loading import SessionData
-
-
 @dataclass
 class ValidationConfig:
-    """Konfiguration für einfache Sanity-Checks.
-
-    Parameters
-    ----------
-    min_sampling_rate:
-        Minimal akzeptierte Abtastrate (Hz).
-    min_channels:
-        Mindestanzahl EEG-Kanäle für gültige Analyse.
-    min_duration / max_duration:
-        Zeitliche Schranken (Sekunden). Dauerberechnung erfolgt aus Raw.times.
-    check_data_quality:
-        Steuert zusätzliche Signal-Heuristiken (Nullsignal, extreme Amplitude).
-    """
 
     min_sampling_rate: float = 100.0
     min_channels: int = 4
@@ -48,31 +15,25 @@ class ValidationConfig:
     max_duration: float = 3600.0  # 1 Stunde
     check_data_quality: bool = True
 
-
 def validate_raw_data(raw: Raw, config: ValidationConfig) -> List[str]:
-    """Prüfe eine einzelne Aufnahme und liefere Problem-Liste.
-
-    Dauerberechnung: `raw.times[-1]` (≈ Gesamtzeit). Alternativ exakter:
-    `(raw.n_times - 1) / raw.info['sfreq']` – für diese Heuristik ausreichend.
-    """
     issues: List[str] = []
 
     # Sampling Rate
     if raw.info["sfreq"] < config.min_sampling_rate:
         issues.append(f"Low sampling rate ({raw.info['sfreq']} Hz)")
 
-    # Kanalanzahl
+    # Channels
     if len(raw.ch_names) < config.min_channels:
         issues.append(f"Too few channels ({len(raw.ch_names)})")
 
-    # Dauer
+    # Duration
     duration = raw.times[-1] if raw.n_times else 0.0
     if duration < config.min_duration:
         issues.append(f"Short recording ({duration:.1f}s)")
     elif duration > config.max_duration:
         issues.append(f"Very long recording ({duration:.1f}s)")
 
-    # Einfache Qualitätsheuristik
+    # Data Quality Checks
     if config.check_data_quality:
         data = raw.get_data()
         if data.size == 0:
@@ -84,11 +45,9 @@ def validate_raw_data(raw: Raw, config: ValidationConfig) -> List[str]:
 
     return issues
 
-
 def validate_session(
     session_data: SessionData, config: ValidationConfig = None
 ) -> Dict[str, List[str]]:
-    """Validiere beide (optional vorhandenen) Sessions eines Teilnehmers."""
     if config is None:
         config = ValidationConfig()
     validation_results: Dict[str, List[str]] = {}
@@ -102,11 +61,9 @@ def validate_session(
                 validation_results[session_name] = issues
     return validation_results
 
-
 def validate_all_sessions(
     sessions: List[SessionData], config: ValidationConfig = None
 ) -> Dict[str, Dict[str, List[str]]]:
-    """Validiere mehrere Teilnehmer und sammle nur problematische Fälle."""
     if config is None:
         config = ValidationConfig()
     all_results: Dict[str, Dict[str, List[str]]] = {}
@@ -116,11 +73,9 @@ def validate_all_sessions(
             all_results[session_data.participant_name] = results
     return all_results
 
-
 def print_validation_summary(
     validation_results: Dict[str, Dict[str, List[str]]],
 ) -> None:
-    """Konsolenfreundliche Ausgabe aller Probleme (oder Erfolgsmeldung)."""
     if not validation_results:
         print("✓ Alle Sessions haben die Validierung bestanden!")
         return
@@ -130,9 +85,7 @@ def print_validation_summary(
         for session_name, issues in sessions.items():
             print(f"  {session_name}: {'; '.join(issues)}")
 
-
 def get_validation_stats(sessions: List[SessionData]) -> Dict[str, Any]:
-    """Aggregiere einfache Strukturstatistiken über alle geladenen Sessions."""
     total_participants = len(sessions)
     indoor_sessions = sum(1 for s in sessions if s.indoor_session is not None)
     outdoor_sessions = sum(1 for s in sessions if s.outdoor_session is not None)
