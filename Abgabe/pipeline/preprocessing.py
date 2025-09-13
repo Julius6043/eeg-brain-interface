@@ -62,7 +62,7 @@ def apply_ica(raw: Raw, n_components: float = 0.95, random_state: int = 42) -> R
         ica.exclude = eog_indices
         ica.apply(raw)
         print(f"ICA applied, excluded {len(eog_indices)} components")
-    except Exception as e:  # pragma: no cover - heuristische Pfade
+    except Exception as e:  
         print(f"ICA failed: {e}")
     return raw
 
