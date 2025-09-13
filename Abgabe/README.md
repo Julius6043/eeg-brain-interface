@@ -11,3 +11,7 @@ This project uses **Python 3.12** and [uv](https://docs.astral.sh/uv/#installati
 2. Create a new virtual environment in the root directory with `uv venv --python 3.12 .venv`.
 
 3. Install all requirements with `uv sync --frozen` (`--frozen` uses the versions in the `uv.lock` file).
+
+## Running the Notebook
+
+TODO.
