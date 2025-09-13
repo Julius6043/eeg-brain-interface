@@ -5,7 +5,7 @@ torch
 torchvision 
 mne 
 matplotlib
-torcheeg 
+torcheeg
 pyriemann
 seaborn
 pandas
@@ -17,3 +17,6 @@ pylsl
 pyprep
 mnelab
 autoreject
+notebook
+ruff
+pip

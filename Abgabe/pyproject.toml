@@ -1,0 +1,61 @@
+[project]
+name = "bpr_pipeline"
+version = "0.1.0"
+authors = [
+    { name = "Jannik" },
+    { name = "Julius" },
+    { name = "Moritz" },
+    { name = "Rami" },
+]
+description = "Brain Pattern Recognition"
+requires-python = ">=3.12"
+dependencies = [
+    "torch",
+    "numpy",
+    "scikit-learn",
+    "matplotlib",
+    "mne",
+    "scipy",
+    "torchvision",
+    "torcheeg",
+    "pandas",
+    "pyriemann",
+    "seaborn",
+    "pyxdf",
+    "pytest",
+    "braindecode",
+    "pyprep",
+    "mnelab",
+    "autoreject",
+    "joblib",
+    "notebook",
+    "ruff",
+    "nbqa",
+    "pip"
+]
+
+[[tool.uv.index]]
+name = "pytorch-gpu"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-gpu" },
+]
+torchvision = [
+    { index = "pytorch-gpu" },
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+extend-exclude = ["data", "output", "**/.venv"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = true
+docstring-code-line-length = 88
