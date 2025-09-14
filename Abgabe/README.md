@@ -5,7 +5,7 @@
 This project uses **Python 3.12** and [uv](https://docs.astral.sh/uv/#installation) as a package manager. The following
 steps are required to fully run the notebook.
 
-1. Download the data folder from [here](https://nc.uni-bremen.de/index.php/s/nMTQ8wgAm53cycN) and unzip it in the root
+1. Download the data folder from [here](https://nc.uni-bremen.de/index.php/s/FeZWmFKmEFaqm5b) and unzip it in the root
    directory (as `./data`). This is necessary since the iteration through participants requires a specific directory
    structure.
 
