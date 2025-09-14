@@ -27,3 +27,5 @@ uv run jupyter lab
 ```
 
 (Alternatively, you can open this project in VSCode, PyCharm or another IDE that supports Jupyter notebooks.)
+
+Then, open the `Final_Submission.ipynb` notebook. It will guide you through the entire analysis.
